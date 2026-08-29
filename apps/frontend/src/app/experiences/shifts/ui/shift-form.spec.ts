@@ -85,16 +85,15 @@ describe('ShiftFormComponent', () => {
     fixture.detectChanges();
   }
 
-  it('should initialize an empty form in new mode and load the volunteer list', async () => {
-    mockPersonsSvc.getAll.mockResolvedValue({ rows: [{ id: 'v1', first_name: 'Vera' }], count: 1 });
-
+  it('should initialize an empty form in new mode WITHOUT fetching any volunteer list up front', async () => {
+    // Regression guard: the form used to load up to 1000 full person rows on open just to
+    // search them client-side. Volunteer matches are now fetched per search keystroke.
     await createComponent();
     await fixture.whenStable();
 
     expect(component['isNew']()).toBe(true);
     expect(mockShiftsSvc.getById).not.toHaveBeenCalled();
-    expect(mockPersonsSvc.getAll).toHaveBeenCalledWith({ limit: 1000, tags: ['volunteer'] });
-    expect(component['allVolunteers']()).toEqual([{ id: 'v1', first_name: 'Vera' }]);
+    expect(mockPersonsSvc.getAll).not.toHaveBeenCalled();
   });
 
   it('should load an existing volunteer event and its roster in edit mode', async () => {
@@ -219,7 +218,7 @@ describe('ShiftFormComponent', () => {
       expect(component['roster']()).toEqual([{ id: 's1', first_name: 'Vera' }]);
     });
 
-    it('should filter out volunteers already on the roster from search results', async () => {
+    it('searches volunteers server-side and filters out those already on the roster', async () => {
       mockShiftsSvc.getById.mockResolvedValue({ id: 'v-1', name: 'Weekend Canvass' });
       mockPersonsSvc.getAll.mockResolvedValue({
         rows: [
@@ -231,14 +230,22 @@ describe('ShiftFormComponent', () => {
 
       await createComponent('v-1');
       await fixture.whenStable();
-      await component['loadVolunteers']();
       await component['loadRoster']();
 
-      component['volunteerSearch'].set('vera');
-      expect(component['volunteerSearchResults']()).toEqual([]);
+      component['volunteerSearch'].set('volunteer');
+      await component['fetchVolunteerMatches']();
 
-      component['volunteerSearch'].set('victor');
-      expect(component['volunteerSearchResults']()[0]?.id).toBe('v2');
+      // The query goes to the backend (searchStr + volunteer tag), windowed to a dropdown's
+      // worth with a narrow column list — not a whole-table load filtered in the browser.
+      expect(mockPersonsSvc.getAll).toHaveBeenCalledWith({
+        searchStr: 'volunteer',
+        tags: ['volunteer'],
+        startRow: 0,
+        endRow: 25,
+        columns: ['id', 'first_name', 'last_name', 'email'],
+      });
+      // v1 is already on the roster, so only v2 is offered.
+      expect(component['volunteerSearchResults']().map((v: { id: string }) => v.id)).toEqual(['v2']);
     });
 
     it('should remove a volunteer after confirmation', async () => {

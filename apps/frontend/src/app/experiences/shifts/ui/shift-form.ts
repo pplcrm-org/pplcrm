@@ -76,7 +76,6 @@ export class ShiftFormComponent implements OnInit {
     return publicPageUrl(this.auth.getUser()?.tenant_slug, `v/${slug}`);
   });
 
-  protected readonly allVolunteers = signal<any[]>([]);
   protected readonly detail = signal<any>(null);
 
   protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
@@ -141,22 +140,19 @@ export class ShiftFormComponent implements OnInit {
   protected readonly slugChecking = signal(false);
   protected readonly slugUnique = signal<boolean | null>(null);
   protected readonly volunteerSearch = signal('');
-  /** Non-null when the volunteer list could not be fetched, so an empty search can say so. */
+  /** Non-null when the volunteer search could not run, so an empty search can say so. */
   protected readonly volunteersError = signal<string | null>(null);
 
-  // Filter out volunteers that are already signed up
-  protected readonly volunteerSearchResults = computed(() => {
-    const search = this.volunteerSearch().toLowerCase().trim();
-    if (!search) return [];
-
-    const rosterIds = new Set(this.roster().map((r) => String(r.person_id)));
-    return this.allVolunteers().filter((v) => {
-      if (rosterIds.has(String(v.id))) return false;
-      const fullName = `${v.first_name || ''} ${v.last_name || ''}`.toLowerCase();
-      const email = (v.email || '').toLowerCase();
-      return fullName.includes(search) || email.includes(search);
-    });
-  });
+  /**
+   * Server-searched matches, roster members excluded. This used to be a computed filtering an
+   * up-front `allVolunteers` load: the form fetched up to 1000 FULL person rows (wide joined
+   * grid rows) on open just to search four fields client-side, and any volunteer past the load
+   * window was silently unfindable. Each (debounced) keystroke now asks the backend, whose
+   * search covers the same fields the People grid searches, windowed to a dropdown's worth.
+   */
+  protected readonly volunteerSearchResults = signal<any[]>([]);
+  private volunteerFetchTimer: ReturnType<typeof setTimeout> | null = null;
+  private volunteerFetchToken = 0;
 
   protected slugManuallyEdited = false;
 
@@ -214,7 +210,7 @@ export class ShiftFormComponent implements OnInit {
   public ngOnInit(): void {
     const end = this._loading.begin();
     try {
-      void Promise.all([this.loadVolunteers(), this.loadEvent()]).finally(() => end());
+      void this.loadEvent().finally(() => end());
     } catch {
       end();
     }
@@ -229,6 +225,7 @@ export class ShiftFormComponent implements OnInit {
         status: 'signed_up',
       });
       this.volunteerSearch.set('');
+      this.volunteerSearchResults.set([]);
       this.alerts.showSuccess(`${person.first_name} added to roster`);
       await this.loadRoster();
     } catch (err) {
@@ -330,21 +327,36 @@ export class ShiftFormComponent implements OnInit {
     }
   }
 
-  protected async loadVolunteers() {
-    this.volunteersError.set(null);
+  private async fetchVolunteerMatches() {
+    const token = ++this.volunteerFetchToken;
+    const search = this.volunteerSearch().trim();
+    if (!search) {
+      this.volunteerSearchResults.set([]);
+      return;
+    }
     try {
-      const res = await this.personsSvc.getAll({ limit: 1000, tags: ['volunteer'] });
-      this.allVolunteers.set(res?.rows || []);
+      this.volunteersError.set(null);
+      const res = await this.personsSvc.getAll({
+        searchStr: search,
+        tags: ['volunteer'],
+        startRow: 0,
+        endRow: 25,
+        columns: ['id', 'first_name', 'last_name', 'email'],
+      });
+      if (token !== this.volunteerFetchToken) return; // a newer keystroke superseded this one
+      const rosterIds = new Set(this.roster().map((r) => String(r.person_id)));
+      this.volunteerSearchResults.set((res?.rows || []).filter((v) => !rosterIds.has(String(v['id']))));
     } catch (err) {
-      console.error('Failed to load volunteers', err);
+      if (token !== this.volunteerFetchToken) return;
+      console.error('Failed to search volunteers', err);
       // Only the console knew about this before, so the search box just looked empty.
       this.volunteersError.set(err instanceof Error && err.message ? err.message : 'Could not load your volunteers.');
     }
   }
 
-  /** Retry for the search list after a failed load, without reloading the whole page. */
+  /** Retry for the search after a failure, without reloading the whole page. */
   protected reloadVolunteers(): void {
-    void this.loadVolunteers();
+    void this.fetchVolunteerMatches();
   }
 
   protected onSlugInput() {
@@ -354,6 +366,8 @@ export class ShiftFormComponent implements OnInit {
   protected onVolunteerSearchInput(event: Event): void {
     const input = event.target as HTMLInputElement | null;
     this.volunteerSearch.set(input?.value ?? '');
+    if (this.volunteerFetchTimer) clearTimeout(this.volunteerFetchTimer);
+    this.volunteerFetchTimer = setTimeout(() => void this.fetchVolunteerMatches(), 200);
   }
 
   protected onShiftStatusChange(shift: any, event: Event): void {

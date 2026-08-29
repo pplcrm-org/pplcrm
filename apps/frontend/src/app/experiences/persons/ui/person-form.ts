@@ -139,6 +139,11 @@ export class PersonForm implements OnInit {
   protected readonly householdResults = signal<any[]>([]);
   protected readonly householdSearch = signal('');
   protected readonly householdsLoading = signal(false);
+  /** Debounce + stale-response guard for the household search (command-palette pattern):
+   *  un-debounced, every keystroke fired a server query, and a slower older response could
+   *  land after a newer one and overwrite its results. */
+  private householdFetchTimer: ReturnType<typeof setTimeout> | null = null;
+  private householdFetchToken = 0;
 
   protected readonly pendingHouseholdId = signal<string | null>(null);
   protected readonly isLoading = this._loading.visible;
@@ -492,7 +497,8 @@ export class PersonForm implements OnInit {
     const target = ev.target as HTMLInputElement | null;
     const val = target?.value ?? '';
     this.householdSearch.set(val);
-    void this.fetchHouseholds();
+    if (this.householdFetchTimer) clearTimeout(this.householdFetchTimer);
+    this.householdFetchTimer = setTimeout(() => void this.fetchHouseholds(), 200);
   }
 
   protected openAssignDrawer() {
@@ -716,6 +722,7 @@ export class PersonForm implements OnInit {
   }
 
   private async fetchHouseholds() {
+    const token = ++this.householdFetchToken;
     try {
       this.householdsLoading.set(true);
       const opts = {
@@ -724,12 +731,14 @@ export class PersonForm implements OnInit {
         columns: ['id', 'street_num', 'street1', 'street2', 'apt', 'city', 'state', 'zip', 'country', 'persons_count'],
       };
       const res = await this.householdsSvc.getAll(opts);
+      if (token !== this.householdFetchToken) return; // a newer query superseded this one
       this.householdResults.set(res.rows || []);
     } catch (err) {
+      if (token !== this.householdFetchToken) return;
       this.alertSvc.showError(getUserErrorMessage(err, 'Could not load households. Please try again.'));
       this.householdResults.set([]);
     } finally {
-      this.householdsLoading.set(false);
+      if (token === this.householdFetchToken) this.householdsLoading.set(false);
     }
   }
 
