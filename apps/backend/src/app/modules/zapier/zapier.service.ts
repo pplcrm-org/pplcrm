@@ -4,12 +4,15 @@ import { BaseRepository } from '../../lib/base.repo';
 import { logger } from '../../logger';
 import { assertSafeOutboundUrl, resolveSafeOutboundHost } from '../../lib/outbound-url-guard';
 
-export type ZapierEventType =
-  | 'person_created'
-  | 'person_updated'
-  | 'person_deleted'
-  | 'person_tag_added'
-  | 'person_tag_removed';
+export const ZAPIER_EVENT_TYPES = [
+  'person_created',
+  'person_updated',
+  'person_deleted',
+  'person_tag_added',
+  'person_tag_removed',
+] as const;
+
+export type ZapierEventType = (typeof ZAPIER_EVENT_TYPES)[number];
 
 function pickPersonFields(p: Record<string, unknown>): Record<string, unknown> {
   if (!p) return {};
@@ -74,24 +77,41 @@ export class ZapierService {
       .execute();
   }
 
-  async subscribe(tenant_id: string, event_type: ZapierEventType, webhook_url: string): Promise<void> {
+  /**
+   * Register one webhook for one event and return the subscription id — the REST-hooks
+   * contract: Zapier stores the id at subscribe time and later unsubscribes with it.
+   * Several subscriptions per (tenant, event) are allowed (one per Zap); only the exact
+   * same URL dedupes, via uq_zapier_subscriptions_tenant_event_url.
+   */
+  async subscribe(tenant_id: string, event_type: ZapierEventType, webhook_url: string): Promise<{ id: string }> {
     // SSRF (H1): the backend POSTs to this URL from inside the Azure network, so a
     // tenant could otherwise aim it at the cloud metadata endpoint or a loopback port.
     // Rejected here for a clear error; re-checked at request time against DNS rebinding.
     assertSafeOutboundUrl(webhook_url);
-    await this.db
+    const row = await this.db
       .insertInto('zapier_subscriptions')
       .values({ tenant_id, event_type, webhook_url })
-      .onConflict((oc) => oc.columns(['tenant_id', 'event_type']).doUpdateSet({ webhook_url, updated_at: new Date() }))
-      .execute();
+      .onConflict((oc) =>
+        oc.columns(['tenant_id', 'event_type', 'webhook_url']).doUpdateSet({ updated_at: new Date() }),
+      )
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    return { id: String(row.id) };
   }
 
+  /** Remove every webhook for an event type (the in-app/tRPC "disconnect this event" action). */
   async unsubscribe(tenant_id: string, event_type: ZapierEventType): Promise<void> {
     await this.db
       .deleteFrom('zapier_subscriptions')
       .where('tenant_id', '=', tenant_id)
       .where('event_type', '=', event_type)
       .execute();
+  }
+
+  /** Remove one subscription by id. Tenant-scoped; deleting an id that is missing or belongs
+   *  to another tenant removes nothing, so the REST route can stay idempotent. */
+  async unsubscribeById(tenant_id: string, id: string): Promise<void> {
+    await this.db.deleteFrom('zapier_subscriptions').where('tenant_id', '=', tenant_id).where('id', '=', id).execute();
   }
 
   async fireTrigger(tenant_id: string, event_type: ZapierEventType, data: Record<string, unknown>): Promise<void> {

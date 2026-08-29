@@ -318,7 +318,11 @@ Re-verified against the live Container App: all expected env vars present (incl.
       paying ~CAD 7/mo each to catch a broken Pages deploy or an expired custom-domain cert is
       worth it. The api and worker probes are already on and stay on.
 - [ ] Consider putting `api.pplcrm.com` behind the Cloudflare proxy (currently DNS-only/grey for the managed
-      cert). Optional. **Decide together with the `TRUST_PROXY` measurement below.**
+      cert). Optional. **Decide together with the `TRUST_PROXY` measurement below.** Note (2026-08-28):
+      this is the actual denial-of-service protection for the API domain. The application-level rate
+      limits (per-IP, plus 120/min per workspace on the keyed `/api/zapier/*` endpoints) stop key
+      brute-forcing and runaway integrations, but nothing in front of the Container App absorbs a
+      volumetric flood while the record stays unproxied.
 - [ ] **Measure the real proxy hop count behind `TRUST_PROXY=1`** (open since the second review).
       Log `req.ip` / `x-forwarded-for` / `cf-connecting-ip` for one request arriving through a
       Cloudflare Worker (`*.pplforms.com` or `go.pplcrm.com`) and one arriving direct at
@@ -326,6 +330,16 @@ Re-verified against the live Container App: all expected env vars present (incl.
       on the public donation/form/companion endpoints currently treats all Worker traffic as **one
       shared bucket** (one caller can exhaust it for everyone). Adjust `TRUST_PROXY` per the
       finding — and re-measure if `api.pplcrm.com` later moves behind the Cloudflare proxy.
+- [ ] **Publish the pplCRM Zapier app** from the Zapier developer account. The app definition lives
+      in `tools/zapier-app/` (five person-event instant triggers, create-or-update/tag/untag
+      actions, find-person search, workspace-API-key auth); its README has the exact commands —
+      `zapier register` once, then `zapier validate` + `zapier push`, then `zapier promote` plus
+      Zapier's app review to appear in their public directory. The backend endpoints it calls are
+      already deployed. Until the app is live in the directory, the pricing page's "API access &
+      300+ integrations" row is not something a customer can act on. After promotion, add a
+      "connect pplCRM in Zapier" sentence to the forms help article's API section
+      (`libs/common/src/lib/help/articles/engagement.ts`) — it deliberately does not claim a
+      directory listing exists yet.
 
 ## 11. Final go-live smoke test (against live keys)
 

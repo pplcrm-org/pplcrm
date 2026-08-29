@@ -1,17 +1,11 @@
 import { z } from 'zod';
 import { authProcedure, router } from '../../../trpc';
 import type { ZapierEventType } from './zapier.service';
-import { ZapierService } from './zapier.service';
+import { ZAPIER_EVENT_TYPES, ZapierService } from './zapier.service';
 
 const zapierService = new ZapierService();
 
-const eventTypeSchema = z.enum([
-  'person_created',
-  'person_updated',
-  'person_deleted',
-  'person_tag_added',
-  'person_tag_removed',
-]);
+const eventTypeSchema = z.enum(ZAPIER_EVENT_TYPES);
 
 export const ZapierRouter = router({
   // Zapier authenticates with the workspace API key (settings.generateApiKey / the API Keys

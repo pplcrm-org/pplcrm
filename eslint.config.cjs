@@ -118,6 +118,13 @@ module.exports = [
     languageOptions: { sourceType: 'commonjs', globals: { ...globals.node } },
   },
 
+  /* 6️⃣c The Zapier CLI app is standalone CommonJS pushed to Zapier's platform
+   *      with `zapier push` — it is not part of any Nx project build. */
+  {
+    files: ['tools/zapier-app/**/*.js'],
+    languageOptions: { sourceType: 'commonjs', globals: { ...globals.node } },
+  },
+
   /* 6️⃣b Claude Code hook scripts are Node ESM, run by the editor harness (not
    *      by the app), so they need node globals and may write to stdout. */
   {

@@ -1,0 +1,13 @@
+{
+  "name": "pplcrm-zapier",
+  "version": "1.0.0",
+  "description": "pplCRM app for the Zapier platform: person triggers, person/tag actions, and a find-person search, all backed by the pplCRM workspace API.",
+  "main": "index.js",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "zapier-platform-core": "^17.0.0"
+  }
+}

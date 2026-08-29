@@ -362,6 +362,24 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         kind: 'p',
         text: 'Submitting from your own server or backend instead? Create a **workspace API key** (Workspace settings → **API keys**) and send it as an `Authorization: Bearer` header. The key identifies your workspace on its own — no `?t=` needed — and lifts the anonymous per-visitor rate limit in favor of a per-workspace one built for batch traffic. The same key authenticates Zapier and the event RSVP and volunteer signup endpoints. API access is available on **Grassroots** and above.',
       },
+      { kind: 'h2', id: 'api-endpoints', text: 'What the key unlocks (endpoint reference)' },
+      {
+        kind: 'list',
+        items: [
+          '`POST /api/forms/submit/<slug>` — submit a form response. Keyless from a browser (with `?t=<workspace>`); keyed from a server.',
+          '`POST /api/event-pages/rsvp/<slug>` — RSVP to an event page, using the same field names as the public page.',
+          '`POST /api/events/signup/<slug>` — sign a volunteer up for a shift, using the same field names as the public page.',
+          '`POST /api/zapier/persons/upsert` — create a person, or update the person with that email. `email` is required; names, phones, social links and notes are optional.',
+          '`POST /api/zapier/persons/tag` and `POST /api/zapier/persons/untag` — add or remove a tag, identifying the person by `email` and the tag by `tag_name`.',
+          '`GET /api/zapier/persons/search?email=<address>` — find people by exact email match. Returns a list; an empty list means no match.',
+          '`GET /api/zapier/persons/recent` — the ten most recently added people.',
+          '`GET /api/zapier/me` — names the workspace behind the key; useful as a connection test.',
+        ],
+      },
+      {
+        kind: 'p',
+        text: 'Webhooks out: `POST /api/zapier/subscribe` with a JSON body of `event_type` and `hook_url` registers an HTTPS URL to be called whenever the event happens — `person_created`, `person_updated`, `person_deleted`, `person_tag_added` or `person_tag_removed`. It returns an `id`; `DELETE /api/zapier/subscribe/<id>` stops that webhook. Several webhooks can listen to the same event, so more than one Zap or service can subscribe at once. Any service that can send HTTP requests and receive webhooks — Zapier included — can drive all of this. Keyed requests are limited to **120 per minute per workspace**.',
+      },
       {
         kind: 'callout',
         tone: 'warning',

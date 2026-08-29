@@ -18,6 +18,7 @@ apps/
           0001_baseline.ts
           2026-08-20-zzz-squash-bookkeeping.ts
           2026-08-22-donor-portal.ts
+          2026-08-28-zapier-rest-hooks.ts
           schema.sql
         config/
           email-folders.config.ts
