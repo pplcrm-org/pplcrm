@@ -380,6 +380,79 @@ export class HouseholdsController extends BaseController<'households', Household
     });
   }
 
+  /**
+   * Attach one tag to many households in a single round trip — the grid's bulk "Add tag"
+   * action. One INSERT … SELECT with a NOT EXISTS guard (the tag-merge shape): selecting from
+   * `households` confirms tenant ownership of every id, and the placeholder household is
+   * excluded rather than failing the whole batch the way the single attach refuses it.
+   * The id array is capped at MAX_BULK_IDS by the router input.
+   */
+  public async attachTagToMany(
+    household_ids: string[],
+    name: string,
+    type: 'tag' | 'issue' = 'tag',
+    auth: IAuthKeyPayload,
+  ): Promise<{ tagged: number }> {
+    const placeholders = await this.getRepo().getPlaceholderIds(auth.tenant_id, household_ids);
+    const targetIds = household_ids.filter((id) => !placeholders.has(id));
+    if (targetIds.length === 0) return { tagged: 0 };
+
+    const randomHexColor = () =>
+      '#' +
+      Math.floor(Math.random() * 0xffffff)
+        .toString(16)
+        .padStart(6, '0');
+    const tag = await this.tagsRepo.addOrGet({
+      row: {
+        name,
+        color: randomHexColor(),
+        tenant_id: auth.tenant_id,
+        createdby_id: auth.user_id,
+        updatedby_id: auth.user_id,
+        type,
+      } as OperationDataType<'tags', 'insert'>,
+      onConflictColumn: 'name',
+    });
+    if (!tag?.id) {
+      throw new TRPCError({ message: 'Failed to add the tag', code: 'INTERNAL_SERVER_ERROR' });
+    }
+    const tagId = String(tag.id);
+    const db = this.getRepo().db;
+
+    const inserted = await db
+      .insertInto('map_households_tags')
+      .columns(['tenant_id', 'household_id', 'tag_id', 'createdby_id', 'updatedby_id'])
+      .expression(
+        db
+          .selectFrom('households as h')
+          .select((eb) => [
+            eb.val(auth.tenant_id).as('tenant_id'),
+            eb.ref('h.id').as('household_id'),
+            eb.val(tagId).as('tag_id'),
+            eb.val(auth.user_id).as('createdby_id'),
+            eb.val(auth.user_id).as('updatedby_id'),
+          ])
+          .where('h.tenant_id', '=', auth.tenant_id)
+          .where('h.id', 'in', targetIds)
+          .where((eb) =>
+            eb.not(
+              eb.exists(
+                eb
+                  .selectFrom('map_households_tags as m')
+                  .select('m.tag_id')
+                  .where('m.tenant_id', '=', auth.tenant_id)
+                  .whereRef('m.household_id', '=', 'h.id')
+                  .where('m.tag_id', '=', tagId),
+              ),
+            ),
+          ),
+      )
+      .returning('household_id')
+      .execute();
+
+    return { tagged: inserted.length };
+  }
+
   public async detachTag(
     tenant_id: string,
     household_id: string,

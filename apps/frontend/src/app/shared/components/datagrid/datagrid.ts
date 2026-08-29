@@ -557,9 +557,10 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
       .filter(Boolean);
     if (!ids.length) return;
     try {
-      for (const id of ids) {
-        await this.gridSvc.attachTag(id, tag, 'tag');
-      }
+      // One bulk call (chunked in the service) — this used to await one attachTag mutation per
+      // selected row, so tagging a "select all matching" selection was thousands of sequential
+      // round trips with partial state left behind on a mid-loop failure.
+      await this.gridSvc.attachTagToMany(ids, tag, 'tag');
       // Toast repeats the scale (§2 / §7.5).
       this.alertSvc.showSuccess(`Added ${tag} to ${ids.length} ${this.nounFor(ids.length)}.`);
       this.cancelBulkTag();

@@ -512,6 +512,117 @@ export class PersonsService {
     };
   }
 
+  /**
+   * Attach one tag to many people in a single round trip — the grid's bulk "Add tag" action.
+   * The mapping write is ONE INSERT … SELECT with a NOT EXISTS guard (same shape as the tag
+   * merge in tags.repo.ts): selecting from `persons` also confirms every id belongs to this
+   * tenant, and RETURNING person_id yields exactly the people who were NEWLY tagged, so the
+   * per-person side effects attachTag performs (tag_added workflow trigger, Zapier trigger)
+   * fire only for them. The activity log gets one entry with the count, not N entries.
+   * The id array is capped at MAX_BULK_IDS by the router input.
+   */
+  public async attachTagToMany(
+    person_ids: string[],
+    name: string,
+    type: 'tag' | 'issue' = 'tag',
+    auth: IAuthKeyPayload,
+  ): Promise<{ tagged: number }> {
+    const randomHexColor = () =>
+      '#' +
+      Math.floor(Math.random() * 0xffffff)
+        .toString(16)
+        .padStart(6, '0');
+    const tag = await this.tagsRepo.addOrGet({
+      row: {
+        name,
+        color: randomHexColor(),
+        tenant_id: auth.tenant_id,
+        createdby_id: auth.user_id,
+        updatedby_id: auth.user_id,
+        type,
+      } as OperationDataType<'tags', 'insert'>,
+      onConflictColumn: 'name',
+    });
+    if (!tag?.id) {
+      throw new TRPCError({ message: 'Failed to add the tag', code: 'INTERNAL_SERVER_ERROR' });
+    }
+    const tagId = String(tag.id);
+    const db = this.personsRepo.db;
+
+    const inserted = await db
+      .insertInto('map_peoples_tags')
+      .columns(['tenant_id', 'person_id', 'tag_id', 'createdby_id', 'updatedby_id'])
+      .expression(
+        db
+          .selectFrom('persons as p')
+          .select((eb) => [
+            eb.val(auth.tenant_id).as('tenant_id'),
+            eb.ref('p.id').as('person_id'),
+            eb.val(tagId).as('tag_id'),
+            eb.val(auth.user_id).as('createdby_id'),
+            eb.val(auth.user_id).as('updatedby_id'),
+          ])
+          .where('p.tenant_id', '=', auth.tenant_id)
+          .where('p.id', 'in', person_ids)
+          .where((eb) =>
+            eb.not(
+              eb.exists(
+                eb
+                  .selectFrom('map_peoples_tags as m')
+                  .select('m.tag_id')
+                  .where('m.tenant_id', '=', auth.tenant_id)
+                  .whereRef('m.person_id', '=', 'p.id')
+                  .where('m.tag_id', '=', tagId),
+              ),
+            ),
+          ),
+      )
+      .returning('person_id')
+      .execute();
+    const newlyTagged = inserted.map((r) => String(r.person_id));
+
+    if (newlyTagged.length > 0) {
+      const workflowsController = new WorkflowsController();
+      for (const personId of newlyTagged) {
+        try {
+          await workflowsController.triggerTagAdded(auth.tenant_id, personId, tagId, name);
+        } catch (err) {
+          logger.error({ err }, 'Failed to trigger tag_added workflow');
+        }
+      }
+      try {
+        await this.userActivity.log({
+          tenant_id: auth.tenant_id,
+          user_id: auth.user_id,
+          activity: 'update',
+          entity: 'persons',
+          quantity: newlyTagged.length,
+          metadata: {
+            action: `bulk_attach_${type}`,
+            name,
+            count: newlyTagged.length,
+            ...(auth.source ? { source: auth.source } : {}),
+          },
+        });
+      } catch (e) {
+        logger.error({ err: e }, 'Failed to log bulk attach tag activity');
+      }
+      for (const personId of newlyTagged) {
+        try {
+          await queueZapierTrigger(db, auth.tenant_id, 'person_tag_added', {
+            person_id: personId,
+            tag_name: name,
+            tag_type: type,
+          });
+        } catch (e) {
+          logger.error({ err: e }, '[Zapier] Failed to queue person_tag_added trigger');
+        }
+      }
+    }
+
+    return { tagged: newlyTagged.length };
+  }
+
   public async attachTag(person_id: string, name: string, type: 'tag' | 'issue' = 'tag', auth: IAuthKeyPayload) {
     const randomHexColor = () =>
       '#' +

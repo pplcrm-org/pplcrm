@@ -33,6 +33,25 @@ function attachTag() {
     .mutation(({ input, ctx }) => personsService.attachTag(input.id, input.tag_name, input.type ?? 'tag', ctx.auth));
 }
 
+/** Bulk "Add tag" from the grid: one round trip for the whole selection instead of one
+ *  mutation per person. Same id-array cap as deleteMany. */
+function attachTagToMany() {
+  return authProcedure
+    .input(
+      z.object({
+        ids: z
+          .array(idSchema)
+          .min(1, 'At least one ID is required')
+          .max(MAX_BULK_IDS, 'Too many items selected for one action'),
+        tag_name: z.string().trim().min(1, 'Tag name cannot be empty').max(50, 'Tag name too long'),
+        type: z.enum(['tag', 'issue']).default('tag').optional(),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      personsService.attachTagToMany(input.ids, input.tag_name, input.type ?? 'tag', ctx.auth),
+    );
+}
+
 function count() {
   return authProcedure.query(({ ctx }) => persons.getCount(ctx.auth.tenant_id));
 }
@@ -276,6 +295,7 @@ export const PersonsRouter = router({
   getByPublicId: getByPublicId(),
   getActivity: getActivity(),
   attachTag: attachTag(),
+  attachTagToMany: attachTagToMany(),
   detachTag: detachTag(),
   delete: deleteOne(),
   deleteMany: deleteMany(),

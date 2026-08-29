@@ -5,6 +5,7 @@ import {
   ExportCsvResponseType,
   getAllOptionsType,
   LogInstantExportInputType,
+  MAX_BULK_IDS,
   QueueExportInputType,
 } from '../../../../../../libs/common/src';
 import { TRPCService } from './trpc-service';
@@ -49,10 +50,35 @@ export abstract class AbstractAPIService<T extends keyof Models, U> extends TRPC
       throw new Error(`Endpoint for "${String(this.endpointName)}" not found on tRPC client.`);
     }
     if ('deleteMany' in endpoint && endpoint.deleteMany) {
-      return (await endpoint.deleteMany.mutate(ids)) !== null;
+      // The backend caps one deleteMany call at MAX_BULK_IDS ids, while "select all matching"
+      // can hold a larger selection — an oversized array was rejected wholesale by input
+      // validation and the bulk delete simply failed. Send sequential chunks instead.
+      let allOk = true;
+      for (let i = 0; i < ids.length; i += MAX_BULK_IDS) {
+        allOk = (await endpoint.deleteMany.mutate(ids.slice(i, i + MAX_BULK_IDS))) !== null && allOk;
+      }
+      return allOk;
     }
-    const results = await Promise.all(ids.map((id) => this.delete(id)));
-    return results.every(Boolean);
+    // Fallback for entities without a deleteMany endpoint: bounded parallelism, not one
+    // unbounded Promise.all that fires a request per id all at once.
+    let allOk = true;
+    const FALLBACK_DELETE_CHUNK = 25;
+    for (let i = 0; i < ids.length; i += FALLBACK_DELETE_CHUNK) {
+      const results = await Promise.all(ids.slice(i, i + FALLBACK_DELETE_CHUNK).map((id) => this.delete(id)));
+      allOk = results.every(Boolean) && allOk;
+    }
+    return allOk;
+  }
+
+  /**
+   * Attach one tag to many records. The default falls back to one mutation per id for entities
+   * without a bulk endpoint; entities that have `attachTagToMany` (persons, households) override
+   * this with chunked single-round-trip calls.
+   */
+  public async attachTagToMany(ids: string[], tag_name: string, type: 'tag' | 'issue' = 'tag'): Promise<void> {
+    for (const id of ids) {
+      await this.attachTag(id, tag_name, type);
+    }
   }
 
   public abstract detachTag(id: string, tag_name: string, type?: 'tag' | 'issue'): Promise<unknown>;

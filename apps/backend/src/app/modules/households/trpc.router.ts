@@ -76,6 +76,20 @@ export const HouseholdsRouter = router({
     )
     .mutation(({ input, ctx }) => households.attachTag(input.id, input.tag_name, input.type ?? 'tag', ctx.auth)),
 
+  /** Bulk "Add tag" from the grid: one round trip for the whole selection. */
+  attachTagToMany: authProcedure
+    .input(
+      z.object({
+        ids: z
+          .array(idSchema)
+          .min(1, 'At least one ID is required')
+          .max(MAX_BULK_IDS, 'Too many items selected for one action'),
+        tag_name: z.string().trim().min(1, 'Tag name cannot be empty').max(50, 'Tag name too long'),
+        type: z.enum(['tag', 'issue']).default('tag').optional(),
+      }),
+    )
+    .mutation(({ input, ctx }) => households.attachTagToMany(input.ids, input.tag_name, input.type ?? 'tag', ctx.auth)),
+
   detachTag: authProcedure
     .input(
       z.object({

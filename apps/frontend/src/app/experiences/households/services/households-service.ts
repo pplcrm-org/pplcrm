@@ -2,6 +2,7 @@ import { Service, inject } from '@angular/core';
 import {
   ExportCsvInputType,
   ExportCsvResponseType,
+  MAX_BULK_IDS,
   UpdateHouseholdsType,
   getAllOptionsType,
 } from '../../../../../../../libs/common/src';
@@ -26,6 +27,13 @@ export class HouseholdsService extends AbstractAPIService<'households', never> {
 
   public attachTag(id: string, tag_name: string, type?: 'tag' | 'issue') {
     return this.api.households.attachTag.mutate({ id: id, tag_name, type });
+  }
+
+  /** One round trip per MAX_BULK_IDS chunk instead of the base class's one mutation per id. */
+  public override async attachTagToMany(ids: string[], tag_name: string, type: 'tag' | 'issue' = 'tag'): Promise<void> {
+    for (let i = 0; i < ids.length; i += MAX_BULK_IDS) {
+      await this.api.households.attachTagToMany.mutate({ ids: ids.slice(i, i + MAX_BULK_IDS), tag_name, type });
+    }
   }
 
   /** CSV import wizard (spec §17) — queues a background households import. */
