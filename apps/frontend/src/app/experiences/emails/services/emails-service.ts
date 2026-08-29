@@ -8,6 +8,16 @@ import { CampaignContextService } from '../../../services/campaign-context.servi
 import { TRPCService } from '../../../services/api/trpc-service';
 import { ComposePayload, DraftPayload } from '../ui/email-compose/email-compose';
 
+/** The HTTP status a tRPC client error carries in `data.httpStatus`, or null. Codes are the
+ *  reliable channel — production replaces most backend error MESSAGES with a generic string. */
+function errorHttpStatus(e: unknown): number | null {
+  if (typeof e !== 'object' || e === null) return null;
+  const data = (e as Record<string, unknown>)['data'];
+  if (typeof data !== 'object' || data === null) return null;
+  const status = (data as Record<string, unknown>)['httpStatus'];
+  return typeof status === 'number' ? status : null;
+}
+
 @Service()
 export class EmailsService extends TRPCService<'emails' | 'email_list'> {
   private readonly campaignContext = inject(CampaignContextService);
@@ -151,24 +161,38 @@ export class EmailsService extends TRPCService<'emails' | 'email_list'> {
     return this.api.emails.setEmailReadStatus.mutate({ id, isRead });
   }
 
-  public async syncEmails(): Promise<{ inserted: number }> {
+  /**
+   * Run a manual sync for every connected provider. Per-provider failures are RETURNED, not
+   * swallowed: this method used to catch them into console.error and return a success-shaped
+   * value, so a user whose only mailbox failed to sync was shown "Inbox synced. No new emails".
+   * `needsReconnect` is true when a failure was the backend's 412 (nothing connected / token
+   * refresh failed) — the caller offers the Settings page instead of a retry.
+   */
+  public async syncEmails(): Promise<{ inserted: number; failedProviders: string[]; needsReconnect: boolean }> {
     const campaignId = await this.campaignId();
-    let msResult = { inserted: 0 };
-    let googleResult = { inserted: 0 };
+    let inserted = 0;
     let msConnected = false;
     let googleConnected = false;
+    const failedProviders: string[] = [];
+    let needsReconnect = false;
 
     // Check MS connection status
     try {
       const msStatus = await this.api.msSync.getConnectionStatus.query({ campaignId });
       if (msStatus?.connected) {
         msConnected = true;
-        msResult = await (
+        const msResult = await (
           this.api.msSync.syncNow.mutate as unknown as (input: any, opts?: any) => Promise<{ inserted: number }>
         )({ campaignId }, { context: { skipErrorHandler: true } });
+        inserted += msResult.inserted;
       }
     } catch (e) {
       console.error('MS sync failed:', e);
+      // A failed status probe leaves msConnected false — same as "not connected" before.
+      if (msConnected) {
+        failedProviders.push('Microsoft');
+        if (errorHttpStatus(e) === 412) needsReconnect = true;
+      }
     }
 
     // Check Google connection status
@@ -176,19 +200,24 @@ export class EmailsService extends TRPCService<'emails' | 'email_list'> {
       const googleStatus = await this.api.googleSync.getConnectionStatus.query({ campaignId });
       if (googleStatus?.connected) {
         googleConnected = true;
-        googleResult = await (
+        const googleResult = await (
           this.api.googleSync.syncNow.mutate as unknown as (input: any, opts?: any) => Promise<{ inserted: number }>
         )({ campaignId }, { context: { skipErrorHandler: true } });
+        inserted += googleResult.inserted;
       }
     } catch (e) {
       console.error('Google sync failed:', e);
+      if (googleConnected) {
+        failedProviders.push('Google');
+        if (errorHttpStatus(e) === 412) needsReconnect = true;
+      }
     }
 
     if (!msConnected && !googleConnected) {
       throw new Error('No email accounts connected');
     }
 
-    return { inserted: msResult.inserted + googleResult.inserted };
+    return { inserted, failedProviders, needsReconnect };
   }
 
   public async getConnectionStatus() {

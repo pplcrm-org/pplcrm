@@ -234,22 +234,32 @@ export class EmailsStore {
         await this.loadEmailsForFolder(currentFolderId);
       }
       await this.refreshFolderCounts();
-      this._lastSyncedAt.set(new Date());
       const inserted = result?.inserted ?? 0;
-      this.alerts.showSuccess(
-        inserted > 0
-          ? `Inbox synced. ${inserted} new ${inserted === 1 ? 'email' : 'emails'}`
-          : 'Inbox synced. No new emails',
-      );
+      const failedProviders = result?.failedProviders ?? [];
+      if (failedProviders.length > 0) {
+        // A provider that was connected failed to sync — never show the success toast for
+        // that (this store used to say "Inbox synced. No new emails" over a failed sync).
+        this.alerts.showError(
+          `${failedProviders.join(' and ')} sync failed. ` +
+            (result?.needsReconnect ? 'Reconnect the account under Settings → Email sync.' : 'Please try again.'),
+        );
+      } else {
+        this._lastSyncedAt.set(new Date());
+        this.alerts.showSuccess(
+          inserted > 0
+            ? `Inbox synced. ${inserted} new ${inserted === 1 ? 'email' : 'emails'}`
+            : 'Inbox synced. No new emails',
+        );
+      }
       return result;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (
-        msg.includes('No email accounts connected') ||
-        msg.includes('No Microsoft account connected') ||
-        msg.includes('No Google account connected') ||
-        msg.includes('Token refresh failed')
-      ) {
+      // Only the client-side "nothing connected" error is matched by message — it is thrown
+      // locally by emails-service, so it survives verbatim. The backend-message matches that
+      // used to sit here ('No Microsoft account connected', 'Token refresh failed', …) were
+      // dead in production, where those messages are replaced by a generic string; provider
+      // failures now come back as `failedProviders` above, not as exceptions.
+      if (msg.includes('No email accounts connected')) {
         const confirmed = await this.dialogs.confirm({
           title: 'Email Account Connection Required',
           message:

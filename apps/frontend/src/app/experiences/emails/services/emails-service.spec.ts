@@ -231,27 +231,58 @@ describe('EmailsService', () => {
 
   describe('Sync Operations', () => {
     it('should trigger email sync when MS is connected', async () => {
-      const mockResult = { inserted: 5 };
       mockApi.msSync.getConnectionStatus.query.mockResolvedValue({ connected: true });
-      mockApi.msSync.syncNow.mutate.mockResolvedValue(mockResult);
+      mockApi.msSync.syncNow.mutate.mockResolvedValue({ inserted: 5 });
       mockApi.googleSync.getConnectionStatus.query.mockResolvedValue({ connected: false });
 
       const result = await service.syncEmails();
 
       expect(mockApi.msSync.syncNow.mutate).toHaveBeenCalled();
-      expect(result).toEqual(mockResult);
+      expect(result).toEqual({ inserted: 5, failedProviders: [], needsReconnect: false });
     });
 
     it('should trigger email sync when Google is connected', async () => {
-      const mockResult = { inserted: 3 };
       mockApi.msSync.getConnectionStatus.query.mockResolvedValue({ connected: false });
       mockApi.googleSync.getConnectionStatus.query.mockResolvedValue({ connected: true });
-      mockApi.googleSync.syncNow.mutate.mockResolvedValue(mockResult);
+      mockApi.googleSync.syncNow.mutate.mockResolvedValue({ inserted: 3 });
 
       const result = await service.syncEmails();
 
       expect(mockApi.googleSync.syncNow.mutate).toHaveBeenCalled();
-      expect(result).toEqual(mockResult);
+      expect(result).toEqual({ inserted: 3, failedProviders: [], needsReconnect: false });
+    });
+
+    it('reports a connected provider whose sync failed instead of returning a success shape', async () => {
+      // Regression guard: a failed provider sync used to be caught into console.error and the
+      // method returned { inserted: 0 } — the store then showed "Inbox synced. No new emails".
+      mockApi.msSync.getConnectionStatus.query.mockResolvedValue({ connected: true });
+      mockApi.msSync.syncNow.mutate.mockRejectedValue(new Error('boom'));
+      mockApi.googleSync.getConnectionStatus.query.mockResolvedValue({ connected: true });
+      mockApi.googleSync.syncNow.mutate.mockResolvedValue({ inserted: 2 });
+
+      const result = await service.syncEmails();
+
+      expect(result).toEqual({ inserted: 2, failedProviders: ['Microsoft'], needsReconnect: false });
+    });
+
+    it('flags needsReconnect when a provider fails with the backend`s 412 precondition error', async () => {
+      const preconditionError = Object.assign(new Error('Token refresh failed.'), {
+        data: { httpStatus: 412 },
+      });
+      mockApi.msSync.getConnectionStatus.query.mockResolvedValue({ connected: false });
+      mockApi.googleSync.getConnectionStatus.query.mockResolvedValue({ connected: true });
+      mockApi.googleSync.syncNow.mutate.mockRejectedValue(preconditionError);
+
+      const result = await service.syncEmails();
+
+      expect(result).toEqual({ inserted: 0, failedProviders: ['Google'], needsReconnect: true });
+    });
+
+    it('still throws when no provider is connected at all', async () => {
+      mockApi.msSync.getConnectionStatus.query.mockResolvedValue({ connected: false });
+      mockApi.googleSync.getConnectionStatus.query.mockResolvedValue({ connected: false });
+
+      await expect(service.syncEmails()).rejects.toThrow('No email accounts connected');
     });
 
     it('should query connection status', async () => {

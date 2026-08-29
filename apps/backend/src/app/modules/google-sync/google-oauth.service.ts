@@ -1,6 +1,8 @@
 import type { Insertable, Kysely } from 'kysely';
 import type { GoogleOauthTokens, Models } from '../../../../../../libs/common/src/lib/kysely.models';
+import { PreconditionFailedError } from '../../errors/app-errors';
 import { decryptSecret, encryptSecret } from '../../lib/secret-crypto';
+import { logger } from '../../logger';
 
 export const NEEDS_FULL_SYNC = JSON.stringify({ _needs_full_sync: true });
 
@@ -160,7 +162,10 @@ export class GoogleOAuthService {
       .executeTakeFirst();
 
     if (!row) {
-      throw new Error('No Google account connected for this campaign');
+      // PreconditionFailedError (412), not a plain Error: a plain Error maps to a 500 whose
+      // message production replaces with a generic string, so the client could never tell
+      // "nothing connected" apart from a real failure (the sync UI's reconnect prompt was dead).
+      throw new PreconditionFailedError('No Google account connected for this campaign');
     }
 
     // Decrypt at the DB read boundary so the rest of this method works in plaintext.
@@ -186,8 +191,11 @@ export class GoogleOAuthService {
     });
 
     if (!res.ok) {
+      // The raw Google response stays in the server log only: a 412's message reaches the
+      // client, so embedding `errorText` here would hand Google's error body to the browser.
       const errorText = await res.text();
-      throw new Error(`Token refresh failed: ${errorText}. Tenant must reconnect their Google account`);
+      logger.error({ status: res.status, errorText }, 'Google token refresh failed');
+      throw new PreconditionFailedError('Token refresh failed. Tenant must reconnect their Google account');
     }
 
     const data: unknown = await res.json();

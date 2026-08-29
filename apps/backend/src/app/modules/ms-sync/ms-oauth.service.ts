@@ -2,6 +2,7 @@ import type { AuthorizationCodeRequest } from '@azure/msal-node';
 import { ConfidentialClientApplication } from '@azure/msal-node';
 import type { Insertable, Kysely } from 'kysely';
 import type { Models, MsOauthTokens } from '../../../../../../libs/common/src/lib/kysely.models';
+import { PreconditionFailedError } from '../../errors/app-errors';
 import { decryptSecret, encryptSecret } from '../../lib/secret-crypto';
 
 export const NEEDS_FULL_SYNC = JSON.stringify({ _needs_full_sync: true });
@@ -159,7 +160,10 @@ export class MsOAuthService {
       .executeTakeFirst();
 
     if (!row) {
-      throw new Error('No Microsoft account connected for this campaign');
+      // PreconditionFailedError (412), not a plain Error: a plain Error maps to a 500 whose
+      // message production replaces with a generic string, so the client could never tell
+      // "nothing connected" apart from a real failure (the sync UI's reconnect prompt was dead).
+      throw new PreconditionFailedError('No Microsoft account connected for this campaign');
     }
 
     // Decrypt at the DB read boundary so the rest of this method works in plaintext.
@@ -178,7 +182,8 @@ export class MsOAuthService {
     });
 
     if (!response?.accessToken) {
-      throw new Error('Token refresh failed. Tenant must reconnect their Microsoft account');
+      // 412 so the fixed message survives production sanitization — see the not-connected throw.
+      throw new PreconditionFailedError('Token refresh failed. Tenant must reconnect their Microsoft account');
     }
 
     const newExpiry = response.expiresOn ?? new Date(Date.now() + 3600 * 1000);
