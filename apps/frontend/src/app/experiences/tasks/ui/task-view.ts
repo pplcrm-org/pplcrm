@@ -151,10 +151,13 @@ export class TaskView {
     const isCurrent = this._requestGuard.begin();
     const end = this._loading.begin();
     try {
+      // Users and teams are workspace-wide reference data, and record navigation (prev/next)
+      // reuses this component instance — so they are fetched once and kept, not refetched on
+      // every task the user walks to. (A workspace with zero teams re-asks each time; harmless.)
       const [t, us, ts] = await Promise.all([
         this.tasks.getById(id),
-        this.userService.getUsers(),
-        this.teams.getAll({ limit: 1000 }),
+        this.users().length > 0 ? null : this.userService.getUsers(),
+        this.teamsList().length > 0 ? null : this.teams.getAll({ limit: 1000 }),
       ]);
       if (!isCurrent()) return; // superseded — do not land stale data
       if (!t) {
@@ -162,8 +165,8 @@ export class TaskView {
         return;
       }
       this.task.set(t as any);
-      this.users.set(us || []);
-      this.teamsList.set(ts?.rows ?? []);
+      if (us) this.users.set(us);
+      if (ts) this.teamsList.set(ts.rows ?? []);
       const assigned = (t as any)?.assigned_to;
       this.assignedTo.set(assigned == null ? '' : String(assigned));
       const team = (t as any)?.team_id;

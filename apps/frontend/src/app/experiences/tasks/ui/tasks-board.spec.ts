@@ -82,6 +82,16 @@ describe('TasksBoard', () => {
     expect(component['countSentence']()).toContain('waiting for an owner');
   });
 
+  it('says so when the server holds more tasks than the capped load returned', async () => {
+    mockTasksSvc.getAll.mockResolvedValue({ rows: [baseRow], count: 4200 });
+    await runInit();
+    fixture.detectChanges();
+
+    expect(component['serverTotal']()).toBe(4200);
+    const text = String((fixture.nativeElement as HTMLElement).textContent);
+    expect(text).toContain('Only the first 1 of 4200 tasks');
+  });
+
   it('should move a card one column via moveCard and flash it', async () => {
     await runInit();
     const task = component['tasks']()[0]!;

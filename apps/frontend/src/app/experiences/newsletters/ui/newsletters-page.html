@@ -17,6 +17,13 @@
     To create or edit a newsletter, use pplCRM on a desktop. You can view reports and send finished drafts here.
   </p>
 
+  @if (serverTotal() > rows().length) {
+  <!-- The load is capped; without this line the table read as complete while newsletters were missing. -->
+  <p class="mb-4 text-warning text-xs tabular-nums">
+    Only the first {{ rows().length }} of {{ serverTotal() }} newsletters are listed below.
+  </p>
+  }
+
   <!-- All-time engagement stat tiles -->
   <div class="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
     <div class="stats border border-base-200 bg-base-100 shadow-sm">

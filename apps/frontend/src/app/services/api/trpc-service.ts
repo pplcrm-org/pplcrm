@@ -1,6 +1,6 @@
 import { inject, Service } from '@angular/core';
 import { Router } from '@angular/router';
-import { GENERIC_SIGNIN_ERROR, getAllOptionsType } from '../../../../../../libs/common/src';
+import { GENERIC_SIGNIN_ERROR } from '../../../../../../libs/common/src';
 import { ErrorService } from '../error.service';
 import {
   TRPCClient,
@@ -13,16 +13,19 @@ import {
 import { observable } from '@trpc/server/observable';
 import superjson from 'superjson';
 
-import { get, set } from 'idb-keyval';
-
 import { TRPCRouter } from '../../../../../backend/src/app/modules/trpc';
 import { environment } from '../../../environments/environment';
 import { TokenService } from './token-service';
 import { refreshLink } from './trpc-refreshlink';
 import { ApiError } from './api-error';
 
+// The type parameter became unused when the dead runCachedCall cache was removed (2026-08-30),
+// but every subclass still writes `extends TRPCService<'persons'>` etc. — dropping it here would
+// touch them all for no behaviour change. Underscore-named so the compiler accepts it as
+// deliberately unused; it goes away for real when the TRPCService-extending components are
+// migrated onto AbstractAPIService (the one deferred review item).
 @Service()
-export class TRPCService<T> {
+export class TRPCService<_T> {
   protected readonly errorSvc = inject(ErrorService);
 
   protected readonly router = inject(Router);
@@ -53,32 +56,10 @@ export class TRPCService<T> {
     this.ac = new AbortController(); // create a fresh controller so future calls are not auto-aborted
   }
 
-  protected async runCachedCall(
-    apiCall: Promise<Partial<T>[]>,
-    apiName: string,
-    options: getAllOptionsType,
-    refresh: boolean,
-  ) {
-    // Use the full serialized (apiName + options) as the IndexedDB key. IDB string
-    // keys can be arbitrarily long, so there's no need to fold it into a 32-bit hash
-    // — that hash collided, letting one query serve another query's cached rows.
-    const cacheKey = `trpc:${JSON.stringify({ apiName, ...options })}`;
-    const payload = await get(cacheKey);
-    let data = payload?.expires > Date.now() ? payload.data : null;
-
-    if (refresh || !data || data.length === 0) {
-      data = await apiCall;
-      await set(cacheKey, { expires: this.addDays(1), data });
-    }
-
-    return data;
-  }
-
-  private addDays(days: number) {
-    const date = new Date(Date.now());
-    date.setDate(date.getDate() + days);
-    return date;
-  }
+  // NOTE: an IndexedDB response cache (runCachedCall) lived here until 2026-08-30 with zero
+  // callers. It was removed rather than wired up: a time-based cache with no invalidation on
+  // mutations would show stale tags/teams/lists after an edit. If client-side caching returns,
+  // it needs a mutation-invalidation design, not a TTL.
 }
 
 function errorLink(errorSvc: ErrorService): TRPCLink<TRPCRouter> {

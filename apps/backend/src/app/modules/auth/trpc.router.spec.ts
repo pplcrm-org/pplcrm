@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BaseRepository } from '../../lib/base.repo';
 import { generateToken, hashToken } from '../../lib/token-hash';
 import { AuthController } from './controller';
+import { PasskeyController } from './passkey.controller';
 import { AuthRouter } from './trpc.router';
 
 vi.mock('../../lib/hibp', () => ({
@@ -135,6 +136,53 @@ describe('AuthRouter', () => {
 
     expect(spy).toHaveBeenCalled();
     expect(result).toEqual(mockUser);
+  });
+
+  // The two WebAuthn payloads were the last z.any() tRPC inputs — the only procedures where
+  // entirely unvalidated JSON reached a controller. The schema is deliberately loose (the spec
+  // grows fields, and @simplewebauthn does the cryptographic verification), so these pin both
+  // halves: garbage is refused at the boundary, and a browser-shaped payload with an unknown
+  // future field still passes through intact.
+  it('refuses a malformed passkey registration payload at the input boundary', async () => {
+    const spy = vi
+      .spyOn(PasskeyController.prototype, 'verifyRegistration')
+      .mockResolvedValue({ verified: true } as any);
+    const caller = AuthRouter.createCaller({
+      ...cookieCtx(),
+      auth: { tenant_id: '1', user_id: '1', session_id: 's1' },
+    } as any);
+
+    await expect(
+      caller.verifyPasskeyRegistration({ response: { id: 'abc', type: 'not-a-public-key' } } as any),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('passes a browser-shaped passkey payload through, unknown future fields included', async () => {
+    const spy = vi
+      .spyOn(PasskeyController.prototype, 'verifyRegistration')
+      .mockResolvedValue({ verified: true } as any);
+    const caller = AuthRouter.createCaller({
+      ...cookieCtx(),
+      auth: { tenant_id: '1', user_id: '1', session_id: 's1' },
+    } as any);
+
+    await caller.verifyPasskeyRegistration({
+      response: {
+        id: 'AbC-123_',
+        rawId: 'AbC-123_',
+        type: 'public-key',
+        response: { clientDataJSON: 'eyJmb28iOiJiYXIifQ', attestationObject: 'o2NmbXQ', transports: ['internal'] },
+        clientExtensionResults: {},
+        futureSpecField: 'passes through',
+      },
+    } as any);
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 'AbC-123_', futureSpecField: 'passes through' }),
+      undefined,
+    );
   });
 
   // Revoking the session you are using is a sign-out, so the refresh cookie has to go with it —

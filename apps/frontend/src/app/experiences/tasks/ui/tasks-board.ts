@@ -58,6 +58,8 @@ export class TasksBoard implements OnInit {
   protected readonly skeletonCards = Array.from({ length: 3 }, (_, i) => i);
 
   protected readonly tasks = signal<BoardTask[]>([]);
+  /** The server's total task count — when it exceeds the loaded rows, the template says so. */
+  protected readonly serverTotal = signal(0);
   protected readonly usersById = signal<Map<string, string>>(new Map());
   protected readonly flashedIds = signal<ReadonlySet<string>>(new Set());
   protected readonly counts = signal<{
@@ -139,6 +141,7 @@ export class TasksBoard implements OnInit {
       const rows = (res.rows || []) as unknown as Record<string, unknown>[];
       const items: BoardTask[] = rows.map((r) => this.toBoardTask(r)).filter((t): t is BoardTask => t !== null);
       this.tasks.set(items);
+      this.serverTotal.set(Number(res.count ?? rows.length));
     } catch (err) {
       this.alerts.showError(getUserErrorMessage(err, 'Could not load the task board. Please try again.'));
     } finally {

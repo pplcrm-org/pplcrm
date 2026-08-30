@@ -130,6 +130,32 @@ describe('TaskView', () => {
     expect(mockTasks.api.tasks.getSubtasks.query).toHaveBeenCalledWith('t2');
   });
 
+  it('does not refetch users or teams when navigating between tasks (reference data is kept)', async () => {
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mockUserService.getUsers).toHaveBeenCalledTimes(1);
+    expect(mockTeams.getAll).toHaveBeenCalledTimes(1);
+    // The default teams mock returns no rows, and an empty list is legitimately re-asked (a
+    // workspace with zero teams). Hold a team so the skip path is exercised for both signals.
+    component['teamsList'].set([{ id: 'tm1', name: 'Team 1' }]);
+
+    mockTasks.getById.mockResolvedValue({
+      id: 't2',
+      name: 'Task 2',
+      status: 'todo',
+      priority: 'low',
+      assigned_to: null,
+      due_at: null,
+      details: null,
+    });
+    fixture.componentRef.setInput('id', 't2');
+    fixture.detectChanges();
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(component['task']().id).toBe('t2');
+    expect(mockUserService.getUsers).toHaveBeenCalledTimes(1);
+    expect(mockTeams.getAll).toHaveBeenCalledTimes(1);
+  });
+
   it('should update task and trigger refresh', async () => {
     await new Promise((r) => setTimeout(r, 10));
 

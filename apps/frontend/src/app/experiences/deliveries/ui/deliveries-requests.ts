@@ -44,6 +44,8 @@ export class DeliveriesRequests implements OnInit {
   protected readonly loading = createLoadingGate();
 
   protected readonly rows = signal<DeliveryRequestRow[]>([]);
+  /** The server's total for the active tab — when it exceeds the loaded rows, the template says so. */
+  protected readonly serverTotal = signal(0);
   protected readonly counts = signal<Record<string, number>>({});
   protected readonly readyCount = signal(0);
   protected readonly activeTab = signal<Tab>('open');
@@ -146,6 +148,7 @@ export class DeliveriesRequests implements OnInit {
         this.svc.getReadyCount(),
       ]);
       this.rows.set(list.rows);
+      this.serverTotal.set(Number(list.count ?? list.rows.length));
       this.counts.set(counts);
       this.readyCount.set(ready);
       this.loaded.set(true);

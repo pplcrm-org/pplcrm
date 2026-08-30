@@ -9,6 +9,7 @@ import { Table } from '@uxcommon/components/table/table';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { Icon } from '@icons/icon';
 
+import { MAX_PAGE_SIZE } from '../../../../../../../libs/common/src';
 import { getUserErrorMessage } from '@frontend/services/api/user-message';
 import { AuthService } from '../../../auth/auth-service';
 import { CampaignContextService } from '../../../services/campaign-context.service';
@@ -88,6 +89,8 @@ export class NewslettersPage {
 
   protected readonly loading = createLoadingGate();
   protected readonly rows = signal<NewsletterRow[]>([]);
+  /** The server's total newsletter count — when it exceeds the loaded rows, the template says so. */
+  protected readonly serverTotal = signal(0);
   protected readonly loaded = signal(false);
 
   /** The compliance footer needs the org's mailing address, so sending is gated on it being set. */
@@ -231,8 +234,11 @@ export class NewslettersPage {
     const end = this.loading.begin();
     try {
       await this.context.ensureLoaded();
-      const { rows } = await this.svc.getAll();
+      // An explicit page window, not a bare getAll(): the bare call leaned on the backend's
+      // default limit, which is a contract this page never chose. Same shape as the Lists page.
+      const { rows, count } = await this.svc.getAll({ startRow: 0, endRow: MAX_PAGE_SIZE });
       this.rows.set((rows as Record<string, unknown>[]).map((r) => this.toRow(r)));
+      this.serverTotal.set(Number(count ?? rows.length));
       this.loaded.set(true);
     } catch (err) {
       this.alerts.showError(getUserErrorMessage(err, 'Could not load newsletters'));

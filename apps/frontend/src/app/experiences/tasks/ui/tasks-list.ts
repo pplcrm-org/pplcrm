@@ -59,6 +59,8 @@ export class TasksList implements OnInit {
   protected readonly skeletonRows = Array.from({ length: 5 }, (_, i) => i);
   protected readonly tab = signal<ListTab>('all');
   protected readonly tasks = signal<ListTask[]>([]);
+  /** The server's total task count — when it exceeds the loaded rows, the template says so. */
+  protected readonly serverTotal = signal(0);
   protected readonly usersById = signal<Map<string, string>>(new Map());
   protected readonly flashedIds = signal<ReadonlySet<string>>(new Set());
   protected readonly counts = signal<{
@@ -150,6 +152,7 @@ export class TasksList implements OnInit {
 
       const rows = (res.rows || []) as unknown as Record<string, unknown>[];
       this.tasks.set(rows.map((r) => this.toListTask(r)));
+      this.serverTotal.set(Number(res.count ?? rows.length));
 
       const flashId = (window.history.state as { flashId?: unknown } | undefined)?.flashId;
       if (typeof flashId === 'string' && flashId) this.flashCard(flashId);

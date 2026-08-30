@@ -5,6 +5,12 @@
       <h2 class="sr-only">Task board</h2>
       @if (countSentence()) {
       <p class="text-base-content/60 text-xs tabular-nums">{{ countSentence() }}</p>
+      } @if (serverTotal() > tasks().length) {
+      <!-- The load is capped; without this line the board read as complete while tasks were missing. -->
+      <p class="text-warning text-xs tabular-nums">
+        Only the first {{ tasks().length }} of {{ serverTotal() }} tasks are on the board — the counts above cover all
+        of them.
+      </p>
       }
     </div>
     <button type="button" class="btn btn-outline btn-primary btn-sm gap-1.5" (click)="openList()">

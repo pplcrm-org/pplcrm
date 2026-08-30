@@ -2,7 +2,13 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { TRPCClientError } from '@trpc/client';
 import { JSendServerError } from '../../../../../../libs/common/src';
 import { ApiError } from './api-error';
-import { getUserErrorMessage, isServerUnreachable, OFFLINE_MESSAGE, SERVER_UNREACHABLE_MESSAGE } from './user-message';
+import {
+  getServerErrorCode,
+  getUserErrorMessage,
+  isServerUnreachable,
+  OFFLINE_MESSAGE,
+  SERVER_UNREACHABLE_MESSAGE,
+} from './user-message';
 
 const FALLBACK = 'Something went wrong, please try again';
 
@@ -22,6 +28,22 @@ function reWrappedError(inner: unknown): TRPCClientError<never> {
   (outer as unknown as { cause: unknown }).cause = inner;
   return outer;
 }
+
+describe('getServerErrorCode', () => {
+  it('reads the server-authored code, including through the ApiError wrapper chain', () => {
+    const server = serverAuthoredTRPCError('A connection of this type already exists.', 'CONFLICT', 409);
+    expect(getServerErrorCode(server)).toBe('CONFLICT');
+    expect(getServerErrorCode(new ApiError('wrapped copy', server))).toBe('CONFLICT');
+    expect(getServerErrorCode(reWrappedError(new ApiError('wrapped copy', server)))).toBe('CONFLICT');
+  });
+
+  it('returns null when nothing in the chain carries a server code — message text is never consulted', () => {
+    expect(getServerErrorCode(new Error('this thing already exists'))).toBeNull();
+    expect(getServerErrorCode(new TRPCClientError('Failed to fetch'))).toBeNull();
+    expect(getServerErrorCode(null)).toBeNull();
+    expect(getServerErrorCode('already exists')).toBeNull();
+  });
+});
 
 describe('getUserErrorMessage', () => {
   it('shows an ApiError message as-is (backend-sanitized copy)', () => {

@@ -3,7 +3,7 @@ import { SideDrawer } from '@uxcommon/components/side-drawer/side-drawer';
 import { Icon } from '@uxcommon/components/icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { ConnectionsService } from '../../../services/api/connections-service';
-import { getUserErrorMessage } from '../../../services/api/user-message';
+import { getServerErrorCode, getUserErrorMessage } from '../../../services/api/user-message';
 import { PersonsService } from '../services/persons-service';
 import { RELATION_TYPES, RELATION_TYPE_LABELS } from '../../../../../../../libs/common/src';
 import type { AddConnectionType } from '../../../../../../../libs/common/src';
@@ -274,7 +274,10 @@ export class AddConnectionDrawer {
       this.resetForm();
       this.closeDrawer.emit();
     } catch (err) {
-      if (err instanceof Error && err.message.includes('already exists')) {
+      // Branch on the server's error CODE, not its message text: the duplicate-connection
+      // refusal is a CONFLICT, and a copy edit or production sanitization must not turn the
+      // specific toast into the generic one.
+      if (getServerErrorCode(err) === 'CONFLICT') {
         this.alertSvc.showError('A connection of this type already exists between these contacts.');
       } else {
         // Every other failure used to be swallowed, so the Save click just did nothing.

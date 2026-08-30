@@ -272,6 +272,52 @@ function dismissPasskeyPrompt() {
 const controller = new AuthController();
 const passkeyController = new PasskeyController();
 
+/** One base64url-encoded WebAuthn field. Bounded so a hostile payload cannot be megabytes. */
+const base64UrlField = z
+  .string()
+  .min(1)
+  .max(50_000)
+  .regex(/^[A-Za-z0-9_=-]+$/);
+
+/**
+ * Structural validation for the browser's two WebAuthn JSON payloads, which used to enter as
+ * `z.any()` — the only tRPC inputs that let entirely unvalidated JSON reach a controller. Loose
+ * objects on purpose: the WebAuthn spec grows fields, and @simplewebauthn/server performs the
+ * deep cryptographic verification — this boundary checks that every load-bearing field is a
+ * bounded base64url string of the right name, nothing more. The `as` casts on the transforms
+ * below align the validated shape with the library's interfaces (whose extension-results typing
+ * is structurally looser than Zod can state) and are safe for exactly that reason.
+ */
+const registrationResponseSchema = z.looseObject({
+  id: base64UrlField,
+  rawId: base64UrlField,
+  type: z.literal('public-key'),
+  response: z.looseObject({
+    clientDataJSON: base64UrlField,
+    attestationObject: base64UrlField,
+    authenticatorData: base64UrlField.optional(),
+    transports: z.array(z.string().max(32)).max(10).optional(),
+    publicKeyAlgorithm: z.number().int().optional(),
+    publicKey: base64UrlField.optional(),
+  }),
+  authenticatorAttachment: z.enum(['cross-platform', 'platform']).optional(),
+  clientExtensionResults: z.record(z.string(), z.unknown()).optional(),
+});
+
+const authenticationResponseSchema = z.looseObject({
+  id: base64UrlField,
+  rawId: base64UrlField,
+  type: z.literal('public-key'),
+  response: z.looseObject({
+    clientDataJSON: base64UrlField,
+    authenticatorData: base64UrlField,
+    signature: base64UrlField,
+    userHandle: base64UrlField.optional(),
+  }),
+  authenticatorAttachment: z.enum(['cross-platform', 'platform']).optional(),
+  clientExtensionResults: z.record(z.string(), z.unknown()).optional(),
+});
+
 function passkeyRegistrationOptions() {
   return authProcedure.query(({ ctx }) => passkeyController.getRegistrationOptions(ctx.auth));
 }
@@ -280,7 +326,7 @@ function verifyPasskeyRegistration() {
   return authProcedure
     .input(
       z.object({
-        response: z.any().transform((v) => v as RegistrationResponseJSON),
+        response: registrationResponseSchema.transform((v) => v as RegistrationResponseJSON),
         friendlyName: z.string().max(100).optional(),
       }),
     )
@@ -312,7 +358,7 @@ function verifyPasskeyAuthentication() {
   return publicProcedure
     .input(
       z.object({
-        response: z.any().transform((v) => v as AuthenticationResponseJSON),
+        response: authenticationResponseSchema.transform((v) => v as AuthenticationResponseJSON),
         nonce: z.string(),
         rememberMe: z.boolean().optional(),
       }),

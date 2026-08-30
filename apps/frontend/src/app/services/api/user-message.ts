@@ -51,6 +51,27 @@ function hasServerAuthoredError(error: unknown, depth: number): boolean {
 }
 
 /**
+ * The tRPC error code the server authored for this failure ('CONFLICT', 'NOT_FOUND', …), or null
+ * when no server-authored code exists anywhere in the wrapper chain. Callers branch on THIS,
+ * never on message text: copy edits and production message sanitization must not change client
+ * behaviour, and a message match silently breaks when either happens.
+ */
+export function getServerErrorCode(error: unknown): string | null {
+  return findServerErrorCode(error, 0);
+}
+
+function findServerErrorCode(error: unknown, depth: number): string | null {
+  if (depth > MAX_CAUSE_DEPTH || error == null) return null;
+  if (error instanceof TRPCClientError) {
+    const code = (error.data as { code?: unknown } | undefined)?.code;
+    if (typeof code === 'string') return code;
+  }
+  if (error instanceof ApiError) return findServerErrorCode(error.originalError, depth + 1);
+  if (error instanceof Error) return findServerErrorCode(error.cause, depth + 1);
+  return null;
+}
+
+/**
  * Returns a message that is safe to show to the user.
  *
  * Server errors (tRPC / JSend) are already sanitized by the backend, so their

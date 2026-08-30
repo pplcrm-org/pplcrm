@@ -98,6 +98,19 @@ describe('TasksList', () => {
     expect(component['countSentence']()).toContain('2 open tasks');
   });
 
+  it('says so when the server holds more tasks than the capped load returned', async () => {
+    mockTasksSvc.getAll.mockResolvedValue({
+      rows: [{ id: 't9', name: 'Only loaded task', status: 'todo' }],
+      count: 4200,
+    });
+    await runInit();
+    fixture.detectChanges();
+
+    expect(component['serverTotal']()).toBe(4200);
+    const text = String((fixture.nativeElement as HTMLElement).textContent);
+    expect(text).toContain('Only the first 1 of 4200 tasks');
+  });
+
   it('should compute All/Mine/Unassigned/Done tab counts', async () => {
     await runInit();
     expect(component['tabCounts']()).toEqual({ all: 3, mine: 2, unassigned: 1, done: 1 });

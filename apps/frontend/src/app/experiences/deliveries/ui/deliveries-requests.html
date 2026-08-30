@@ -23,6 +23,14 @@
   <!-- Status filters for this surface, with live counts (the standard pill tab bar) -->
   <pc-tab-bar [tabs]="tabOptions()" [activeTab]="activeTab()" (activeTabChange)="setTab($event)" />
 
+  @if (serverTotal() > rows().length) {
+  <!-- The load is capped; without this line the tab read as complete while requests were missing. -->
+  <p class="text-warning text-xs tabular-nums">
+    Only the first {{ rows().length }} of {{ serverTotal() }} requests on this tab are shown — the tab counts above
+    cover all of them.
+  </p>
+  }
+
   <!-- Bulk selection bar -->
   @if (selectedCount() > 0) {
   <div

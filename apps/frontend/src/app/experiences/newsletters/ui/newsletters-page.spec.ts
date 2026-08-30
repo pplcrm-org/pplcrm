@@ -100,10 +100,11 @@ describe('NewslettersPage', () => {
     fixture.detectChanges();
   }
 
-  it('loads rows on first render', async () => {
+  it('loads rows on first render, asking for an explicit page window (never the backend default)', async () => {
     svc.getAll.mockResolvedValue({ rows: [sentRow()], count: 1 });
     await create();
     expect(svc.getAll).toHaveBeenCalledTimes(1);
+    expect(svc.getAll).toHaveBeenCalledWith(expect.objectContaining({ startRow: 0, endRow: expect.any(Number) }));
     expect(component['rows']().length).toBe(1);
     expect(component['loaded']()).toBe(true);
   });

@@ -5,6 +5,12 @@
       <h2 class="sr-only">Tasks</h2>
       @if (countSentence()) {
       <p class="text-base-content/60 text-xs tabular-nums">{{ countSentence() }}</p>
+      } @if (serverTotal() > tasks().length) {
+      <!-- The load is capped; without this line the list read as complete while tasks were missing. -->
+      <p class="text-warning text-xs tabular-nums">
+        Only the first {{ tasks().length }} of {{ serverTotal() }} tasks are loaded below — the counts above cover all
+        of them.
+      </p>
       }
     </div>
     <div class="flex items-center gap-2">
