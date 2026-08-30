@@ -2,6 +2,7 @@ import type { Transaction } from 'kysely';
 import { sql } from 'kysely';
 
 import { BaseRepository } from '../../../lib/base.repo';
+import { chunk } from '../../../lib/chunk';
 import type { Models, OperationDataType } from '../../../../../../../libs/common/src/lib/kysely.models';
 
 export interface TurfProgress {
@@ -232,33 +233,36 @@ export class TurfKnocksRepo extends BaseRepository<'turf_knocks'> {
     trx?: Transaction<Models>,
   ): Promise<Map<string, LastDoorKnock>> {
     const map = new Map<string, LastDoorKnock>();
-    if (input.household_ids.length === 0) return map;
+    // Chunked: a list refresh on an unmapped turf can grow one to universe size, and this walk
+    // over its doors must degrade to more queries — not a failed statement. DISTINCT ON stays
+    // correct per chunk because chunks never share a household. See chunk.ts.
+    for (const ids of chunk(input.household_ids)) {
+      const rows = await this.getSelect(trx)
+        .innerJoin('turfs', 'turfs.id', 'turf_knocks.turf_id')
+        .where('turf_knocks.tenant_id', '=', input.tenant_id)
+        .where('turfs.tenant_id', '=', input.tenant_id)
+        .where('turfs.campaign_id', '=', input.campaign_id)
+        .where('turf_knocks.household_id', 'in', ids)
+        .where('turf_knocks.knocked_at', '>=', input.since)
+        .where('turf_knocks.outcome', '<>', CLEARED)
+        .distinctOn('turf_knocks.household_id')
+        .orderBy('turf_knocks.household_id')
+        .orderBy('turf_knocks.knocked_at', 'desc')
+        .select([
+          'turf_knocks.household_id as household_id',
+          'turf_knocks.canvasser_name as canvasser_name',
+          'turf_knocks.outcome as outcome',
+          'turf_knocks.knocked_at as knocked_at',
+        ])
+        .execute();
 
-    const rows = await this.getSelect(trx)
-      .innerJoin('turfs', 'turfs.id', 'turf_knocks.turf_id')
-      .where('turf_knocks.tenant_id', '=', input.tenant_id)
-      .where('turfs.tenant_id', '=', input.tenant_id)
-      .where('turfs.campaign_id', '=', input.campaign_id)
-      .where('turf_knocks.household_id', 'in', input.household_ids)
-      .where('turf_knocks.knocked_at', '>=', input.since)
-      .where('turf_knocks.outcome', '<>', CLEARED)
-      .distinctOn('turf_knocks.household_id')
-      .orderBy('turf_knocks.household_id')
-      .orderBy('turf_knocks.knocked_at', 'desc')
-      .select([
-        'turf_knocks.household_id as household_id',
-        'turf_knocks.canvasser_name as canvasser_name',
-        'turf_knocks.outcome as outcome',
-        'turf_knocks.knocked_at as knocked_at',
-      ])
-      .execute();
-
-    for (const r of rows) {
-      map.set(String(r.household_id), {
-        canvasser_name: r.canvasser_name == null ? null : String(r.canvasser_name),
-        conversation: String(r.outcome) === CONVERSATION,
-        knocked_at: new Date(String(r.knocked_at)),
-      });
+      for (const r of rows) {
+        map.set(String(r.household_id), {
+          canvasser_name: r.canvasser_name == null ? null : String(r.canvasser_name),
+          conversation: String(r.outcome) === CONVERSATION,
+          knocked_at: new Date(String(r.knocked_at)),
+        });
+      }
     }
     return map;
   }

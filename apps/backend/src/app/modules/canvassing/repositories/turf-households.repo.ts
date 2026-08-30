@@ -2,6 +2,7 @@ import type { Transaction } from 'kysely';
 import { sql } from 'kysely';
 
 import { BaseRepository } from '../../../lib/base.repo';
+import { chunk } from '../../../lib/chunk';
 import type { MapViewportType } from '../../../../../../../libs/common/src';
 import type { Models, OperationDataType } from '../../../../../../../libs/common/src/lib/kysely.models';
 
@@ -36,6 +37,17 @@ export interface CoverageDoorRow {
   lng: number;
   conversations: number;
   attempts: number;
+}
+
+/** One turf's exact coverage counts, aggregated in SQL — see getCoverageTurfStats. */
+export interface CoverageTurfStatsRow {
+  turf_id: string;
+  turf_name: string;
+  boundary_name: string | null;
+  doors: number;
+  conversation: number;
+  attempted: number;
+  not_yet: number;
 }
 
 const CONVERSATION = 'conversation';
@@ -85,22 +97,31 @@ export class TurfHouseholdsRepo extends BaseRepository<'turf_households'> {
           updatedby_id: input.user_id,
         }) as OperationDataType<'turf_households', 'insert'>,
     );
-    await this.getInsert(trx)
-      .values(rows)
-      .onConflict((oc) => oc.doNothing())
-      .execute();
+    // One INSERT per chunk, never one statement for the whole set: a list refresh can add a
+    // universe-sized batch, and 6 bound columns per row hits the 65,535-parameter cap near 10k
+    // rows. walk_order is assigned above, before chunking, so the sweep order is preserved
+    // across statements. Callers pass `trx` when the whole batch must land atomically.
+    for (const rowChunk of chunk(rows, 1000)) {
+      await this.getInsert(trx)
+        .values(rowChunk)
+        .onConflict((oc) => oc.doNothing())
+        .execute();
+    }
   }
 
   public async removeDoors(
     input: { tenant_id: string; turf_id: string; household_ids: string[] },
     trx?: Transaction<Models>,
   ): Promise<void> {
-    if (input.household_ids.length === 0) return;
-    await this.getDelete(trx)
-      .where('tenant_id', '=', input.tenant_id)
-      .where('turf_id', '=', input.turf_id)
-      .where('household_id', 'in', input.household_ids)
-      .execute();
+    // Chunked for the same reason as addDoors: a refresh against a shrunken list can remove a
+    // universe-sized batch in one call.
+    for (const ids of chunk(input.household_ids)) {
+      await this.getDelete(trx)
+        .where('tenant_id', '=', input.tenant_id)
+        .where('turf_id', '=', input.turf_id)
+        .where('household_id', 'in', ids)
+        .execute();
+    }
   }
 
   /** Door list with address + geocode for the Companion and the turf map. */
@@ -211,5 +232,114 @@ export class TurfHouseholdsRepo extends BaseRepository<'turf_households'> {
       conversations: Number(r.conversations ?? 0),
       attempts: Number(r.attempts ?? 0),
     }));
+  }
+
+  /**
+   * Per-turf coverage counts, aggregated in SQL — the workspace-wide roll-up used to be built by
+   * reading EVERY located door row ({@link getCoverageRows}) and counting in JS, which shipped
+   * tens of thousands of rows to count a handful of turfs. One row per turf comes back instead.
+   *
+   * The status buckets are per DOOR, exactly as the controller derived them from per-door rows:
+   * a door counts as `conversation` when any knock in the window was a conversation, `attempted`
+   * when it was knocked but never talked to, `not_yet` otherwise. `COUNT(DISTINCT CASE ...)`
+   * expresses "distinct doors having at least one such knock" in a single grouping level, so no
+   * derived table is needed. Only located doors are counted — the same universe the map draws.
+   */
+  public async getCoverageTurfStats(
+    input: { tenant_id: string; from: Date; to: Date },
+    trx?: Transaction<Models>,
+  ): Promise<CoverageTurfStatsRow[]> {
+    const rows = await this.getSelect(trx)
+      .innerJoin('households as h', 'h.id', 'turf_households.household_id')
+      .innerJoin('turfs as t', 't.id', 'turf_households.turf_id')
+      .leftJoin('turf_knocks as k', (join) =>
+        join
+          .onRef('k.turf_id', '=', 'turf_households.turf_id')
+          .onRef('k.household_id', '=', 'turf_households.household_id')
+          .on('k.tenant_id', '=', input.tenant_id)
+          .on('k.knocked_at', '>=', input.from)
+          .on('k.knocked_at', '<', input.to),
+      )
+      .where('turf_households.tenant_id', '=', input.tenant_id)
+      .where('h.lat', 'is not', null)
+      .where('h.lng', 'is not', null)
+      .groupBy(['t.id', 't.name', 't.boundary_name'])
+      .select([
+        't.id as turf_id',
+        't.name as turf_name',
+        't.boundary_name as boundary_name',
+        sql<number>`COUNT(DISTINCT turf_households.household_id)`.as('doors'),
+        sql<number>`COUNT(DISTINCT CASE WHEN k.outcome = ${CONVERSATION} THEN turf_households.household_id END)`.as(
+          'conversation_doors',
+        ),
+        sql<number>`COUNT(DISTINCT CASE WHEN k.id IS NOT NULL THEN turf_households.household_id END)`.as(
+          'knocked_doors',
+        ),
+      ])
+      .execute();
+
+    return rows.map((r) => {
+      const doors = Number(r.doors ?? 0);
+      const conversation = Number(r.conversation_doors ?? 0);
+      const knocked = Number(r.knocked_doors ?? 0);
+      return {
+        turf_id: String(r.turf_id),
+        turf_name: String(r.turf_name),
+        boundary_name: r.boundary_name ? String(r.boundary_name) : null,
+        doors,
+        conversation,
+        attempted: knocked - conversation,
+        not_yet: doors - knocked,
+      };
+    });
+  }
+
+  /**
+   * Just the coordinates of every located door, keyed by turf — what the per-turf outline hulls
+   * are computed from when the workspace is too large to draw doors. No knock join and no
+   * grouping: this is the cheap remainder once the counts above moved into SQL.
+   */
+  public async getCoverageHullPoints(
+    input: { tenant_id: string },
+    trx?: Transaction<Models>,
+  ): Promise<{ turf_id: string; lat: number; lng: number }[]> {
+    const rows = await this.getSelect(trx)
+      .innerJoin('households as h', 'h.id', 'turf_households.household_id')
+      .where('turf_households.tenant_id', '=', input.tenant_id)
+      .where('h.lat', 'is not', null)
+      .where('h.lng', 'is not', null)
+      .select(['turf_households.turf_id as turf_id', 'h.lat as lat', 'h.lng as lng'])
+      .execute();
+    return rows.map((r) => ({ turf_id: String(r.turf_id), lat: Number(r.lat), lng: Number(r.lng) }));
+  }
+
+  /**
+   * How many located doors sit inside `view` (or in the whole workspace without one). Lets the
+   * pan/zoom path decide "too many to draw" from one COUNT instead of fetching every door row
+   * with its knock counts and then throwing them away.
+   */
+  public async countLocatedDoors(
+    input: { tenant_id: string; view?: MapViewportType | null },
+    trx?: Transaction<Models>,
+  ): Promise<number> {
+    const view = input.view ?? null;
+    const row = await this.getSelect(trx)
+      .innerJoin('households as h', 'h.id', 'turf_households.household_id')
+      .where('turf_households.tenant_id', '=', input.tenant_id)
+      .where('h.lat', 'is not', null)
+      .where('h.lng', 'is not', null)
+      // Same repeated null check as getCoverageRows: `$if` does not narrow the outer variable.
+      .$if(view !== null, (qb) =>
+        view === null
+          ? qb
+          : qb
+              .where('h.lat', '>=', view.south)
+              .where('h.lat', '<=', view.north)
+              .where('h.lng', '>=', view.west)
+              .where('h.lng', '<=', view.east),
+      )
+      .select(({ fn }) => [fn.countAll().as('doors')])
+      .executeTakeFirst();
+    return Number(row?.doors ?? 0);
   }
 }

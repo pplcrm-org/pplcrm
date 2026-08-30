@@ -51,6 +51,7 @@ import { assertVolunteerLinkResendAllowed } from '../../lib/volunteer-link-resen
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
 import { volunteerMayRoam } from '../../lib/canvass-roam-policy';
+import { chunk } from '../../lib/chunk';
 import { notifyVolunteerOfLink, type VolunteerLinkSendResult } from '../../lib/mail/volunteer-link-notify';
 import { publicMessageOf } from '../../lib/public-route-errors';
 import { publicOrgName } from '../../lib/public-tenant';
@@ -1079,8 +1080,13 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
     if (view !== null) return this.coverageDoorsInView(auth, from, to, view);
 
-    const [rows, boundary] = await Promise.all([
-      this.turfHouseholds.getCoverageRows({ tenant_id: auth.tenant_id, from, to }),
+    // The counts come back already aggregated — one row per turf — instead of one row per door.
+    // The old shape read EVERY located door with its knock counts and summed them here, which
+    // shipped a whole riding's doors (35k+ rows) to produce a dozen turf totals on every open of
+    // the report. Per-door rows are now read only when the workspace is small enough that the
+    // doors themselves will be drawn (the cap check below).
+    const [stats, boundary] = await Promise.all([
+      this.turfHouseholds.getCoverageTurfStats({ tenant_id: auth.tenant_id, from, to }),
       // This report spans every campaign in the workspace, so there is no one campaign to read the
       // word from. The caller's pinned campaign is used when they have one, and the workspace's
       // permanent office context otherwise — the same default every campaign-scoped write takes.
@@ -1090,64 +1096,77 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       }),
     ]);
 
-    const allDoors: CoverageDoor[] = [];
-    const turfPoints = new Map<string, { name: string; boundary_name: string | null; pts: LatLng[] }>();
-    const turfCounts = new Map<string, { doors: number; conversation: number; attempted: number; not_yet: number }>();
-    // Keyed on the raw name with null as its own key, not on the display label, so a real area
-    // that happens to be named exactly like the bucket label can never be merged into the bucket.
+    const doorsTotal = stats.reduce((n, s) => n + s.doors, 0);
+
+    // By-area roll-up, folded from the per-turf rows: a door's area IS its turf's area (a turf
+    // never spans two areas — see getCoverageRows' doc), so summing turf counts by area name
+    // yields the same numbers the per-door pass produced. Keyed on the raw name with null as its
+    // own key, not on the display label, so a real area that happens to be named exactly like the
+    // bucket label can never be merged into the bucket.
     const areas = new Map<string | null, CoverageArea>();
-
-    for (const r of rows) {
-      const status = this.coverageStatus(r);
-      const point: LatLng = { lat: r.lat, lng: r.lng };
-      allDoors.push({ ...point, status });
-
-      let turf = turfPoints.get(r.turf_id);
-      if (!turf) {
-        turf = { name: r.turf_name, boundary_name: r.boundary_name, pts: [] };
-        turfPoints.set(r.turf_id, turf);
-      }
-      turf.pts.push(point);
-
-      let counts = turfCounts.get(r.turf_id);
-      if (!counts) {
-        counts = { doors: 0, conversation: 0, attempted: 0, not_yet: 0 };
-        turfCounts.set(r.turf_id, counts);
-      }
-      counts.doors += 1;
-      counts[status] += 1;
-
-      let area = areas.get(r.boundary_name);
+    for (const s of stats) {
+      let area = areas.get(s.boundary_name);
       if (!area) {
         area = {
-          boundary_name: r.boundary_name ?? UNBOUNDED_AREA_LABEL,
+          boundary_name: s.boundary_name ?? UNBOUNDED_AREA_LABEL,
           doors: 0,
           conversation: 0,
           attempted: 0,
           not_yet: 0,
         };
-        areas.set(r.boundary_name, area);
+        areas.set(s.boundary_name, area);
       }
-      area.doors += 1;
-      area[status] += 1;
+      area.doors += s.doors;
+      area.conversation += s.conversation;
+      area.attempted += s.attempted;
+      area.not_yet += s.not_yet;
+    }
+    const byBoundary = [...areas.values()].sort((a, b) => b.doors - a.doors);
+
+    // The per-door work, sized to what will actually be drawn. At or under the cap, one per-door
+    // read serves both the coloured dots and the hull points. Past it the doors are dropped
+    // rather than truncated (a sample of a riding's doors would misreport which parts have been
+    // walked), so only the bare coordinates are read — no knock join, no per-door counting.
+    const doors: CoverageDoor[] = [];
+    const turfPoints = new Map<string, LatLng[]>();
+    const pushPoint = (turfId: string, point: LatLng): void => {
+      const pts = turfPoints.get(turfId);
+      if (pts) pts.push(point);
+      else turfPoints.set(turfId, [point]);
+    };
+    if (doorsTotal <= COVERAGE_MAX_DOORS) {
+      const rows = await this.turfHouseholds.getCoverageRows({ tenant_id: auth.tenant_id, from, to });
+      for (const r of rows) {
+        const point: LatLng = { lat: r.lat, lng: r.lng };
+        doors.push({ ...point, status: this.coverageStatus(r) });
+        pushPoint(r.turf_id, point);
+      }
+    } else {
+      const pts = await this.turfHouseholds.getCoverageHullPoints({ tenant_id: auth.tenant_id });
+      for (const p of pts) pushPoint(p.turf_id, { lat: p.lat, lng: p.lng });
     }
 
     const turfs: CoverageTurf[] = [];
-    for (const [id, turf] of turfPoints) {
-      const path = convexHull(turf.pts);
+    for (const s of stats) {
+      const path = convexHull(turfPoints.get(s.turf_id) ?? []);
       if (path.length < MIN_HULL_POINTS) continue;
-      const counts = turfCounts.get(id) ?? { doors: 0, conversation: 0, attempted: 0, not_yet: 0 };
-      turfs.push({ id, name: turf.name, boundary_name: turf.boundary_name, path, ...counts });
+      turfs.push({
+        id: s.turf_id,
+        name: s.turf_name,
+        boundary_name: s.boundary_name,
+        path,
+        doors: s.doors,
+        conversation: s.conversation,
+        attempted: s.attempted,
+        not_yet: s.not_yet,
+      });
     }
 
-    const byBoundary = [...areas.values()].sort((a, b) => b.doors - a.doors);
     return {
       doors_only: false,
-      // Past the cap the doors are dropped rather than truncated: a sample of a riding's doors
-      // would misreport which parts of it have been walked, and that is what this screen is for.
-      doors: allDoors.length > COVERAGE_MAX_DOORS ? [] : allDoors,
-      doors_in_view: allDoors.length,
-      doors_total: rows.length,
+      doors,
+      doors_in_view: doorsTotal,
+      doors_total: doorsTotal,
       turfs,
       byBoundary,
       boundary_label: boundary.label,
@@ -1172,11 +1191,18 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     to: Date,
     view: MapViewportType,
   ): Promise<CoverageDoorsOnly> {
+    // Count before fetching: a zoomed-out rectangle over a fully-cut riding holds every door in
+    // the workspace, and past the cap they are dropped anyway — so the answer used to be computed
+    // by reading tens of thousands of per-door knock rows and discarding them. One COUNT (no
+    // knock join) settles "too many to draw" first; the per-door read runs only when its rows
+    // will actually be sent.
+    const located = await this.turfHouseholds.countLocatedDoors({ tenant_id: auth.tenant_id, view });
+    if (located > COVERAGE_MAX_DOORS) return { doors_only: true, doors: [], doors_in_view: located };
     const rows = await this.turfHouseholds.getCoverageRows({ tenant_id: auth.tenant_id, from, to, view });
     const inView: CoverageDoor[] = rows.map((r) => ({ lat: r.lat, lng: r.lng, status: this.coverageStatus(r) }));
     return {
       doors_only: true,
-      doors: inView.length > COVERAGE_MAX_DOORS ? [] : inView,
+      doors: inView,
       doors_in_view: inView.length,
     };
   }
@@ -2741,14 +2767,33 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
    */
   private async peopleByHousehold(tenant_id: string, household_ids: string[]): Promise<Map<string, ResidentRow[]>> {
     const map = new Map<string, ResidentRow[]>();
-    if (household_ids.length === 0) return map;
-    const rows = await this.knocks.db
-      .selectFrom('persons')
-      .select(['id', 'household_id', 'first_name', 'last_name', 'do_not_contact', 'deceased_at', 'senior'])
-      .where('tenant_id', '=', tenant_id)
-      .where('household_id', 'in', household_ids)
-      .orderBy('id')
-      .execute();
+    // Chunked: a turf is normally a few hundred doors, but a list refresh on an unmapped turf can
+    // grow one to universe size, and this must degrade to more queries — not a failed statement.
+    for (const ids of chunk(household_ids)) {
+      const rows = await this.knocks.db
+        .selectFrom('persons')
+        .select(['id', 'household_id', 'first_name', 'last_name', 'do_not_contact', 'deceased_at', 'senior'])
+        .where('tenant_id', '=', tenant_id)
+        .where('household_id', 'in', ids)
+        .orderBy('id')
+        .execute();
+      this.collectResidents(map, rows);
+    }
+    return map;
+  }
+
+  private collectResidents(
+    map: Map<string, ResidentRow[]>,
+    rows: {
+      id: unknown;
+      household_id: unknown;
+      first_name: string | null;
+      last_name: string | null;
+      do_not_contact: boolean | null;
+      deceased_at: Date | null;
+      senior: boolean | null;
+    }[],
+  ): void {
     for (const r of rows) {
       const hid = String(r.household_id);
       const list = map.get(hid) ?? [];
@@ -2762,7 +2807,6 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       });
       map.set(hid, list);
     }
-    return map;
   }
 
   /**
@@ -2778,19 +2822,22 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     person_ids: string[],
   ): Promise<Map<string, { support: SupportLevel | null; voting_status: VotingStatus | null }>> {
     const map = new Map<string, { support: SupportLevel | null; voting_status: VotingStatus | null }>();
-    if (!campaign_id || person_ids.length === 0) return map;
-    const rows = await this.knocks.db
-      .selectFrom('campaign_person_facts')
-      .select(['person_id', 'support_level', 'voting_status'])
-      .where('tenant_id', '=', tenant_id)
-      .where('campaign_id', '=', campaign_id)
-      .where('person_id', 'in', person_ids)
-      .execute();
-    for (const r of rows) {
-      map.set(String(r.person_id), {
-        support: isSupportLevel(r.support_level) ? r.support_level : null,
-        voting_status: isVotingStatus(r.voting_status) ? r.voting_status : null,
-      });
+    if (!campaign_id) return map;
+    // Chunked for the same oversized-turf reason as peopleByHousehold.
+    for (const ids of chunk(person_ids)) {
+      const rows = await this.knocks.db
+        .selectFrom('campaign_person_facts')
+        .select(['person_id', 'support_level', 'voting_status'])
+        .where('tenant_id', '=', tenant_id)
+        .where('campaign_id', '=', campaign_id)
+        .where('person_id', 'in', ids)
+        .execute();
+      for (const r of rows) {
+        map.set(String(r.person_id), {
+          support: isSupportLevel(r.support_level) ? r.support_level : null,
+          voting_status: isVotingStatus(r.voting_status) ? r.voting_status : null,
+        });
+      }
     }
     return map;
   }
@@ -2809,23 +2856,28 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     household_ids: string[],
   ): Promise<Map<string, CompanionYardSign>> {
     const signs = new Map<string, CompanionYardSign>();
-    if (!campaign_id || household_ids.length === 0) return signs;
-    const rows = await this.knocks.db
-      .selectFrom('delivery_requests')
-      .select(['household_id', 'status', 'created_at'])
-      .where('tenant_id', '=', tenant_id)
-      .where('campaign_id', '=', campaign_id)
-      .where('household_id', 'in', household_ids)
-      // 'delivered' travels too: a door that already has its sign has to say so, or a
-      // canvasser reads an open request off the screen and hands out a second one.
-      .where('status', 'in', ['new', 'approved', 'delivered'])
-      .orderBy('updated_at', 'asc')
-      .execute();
-    for (const r of rows) {
-      signs.set(String(r.household_id), {
-        status: String(r.status) === 'delivered' ? 'delivered' : 'requested',
-        requested_at: r.created_at ? new Date(String(r.created_at)).toISOString() : null,
-      });
+    if (!campaign_id) return signs;
+    // Chunked for the same oversized-turf reason as peopleByHousehold. Later rows still win the
+    // map slot within each chunk (updated_at ascending), and chunks never share a household, so
+    // the per-door answer is unchanged.
+    for (const ids of chunk(household_ids)) {
+      const rows = await this.knocks.db
+        .selectFrom('delivery_requests')
+        .select(['household_id', 'status', 'created_at'])
+        .where('tenant_id', '=', tenant_id)
+        .where('campaign_id', '=', campaign_id)
+        .where('household_id', 'in', ids)
+        // 'delivered' travels too: a door that already has its sign has to say so, or a
+        // canvasser reads an open request off the screen and hands out a second one.
+        .where('status', 'in', ['new', 'approved', 'delivered'])
+        .orderBy('updated_at', 'asc')
+        .execute();
+      for (const r of rows) {
+        signs.set(String(r.household_id), {
+          status: String(r.status) === 'delivered' ? 'delivered' : 'requested',
+          requested_at: r.created_at ? new Date(String(r.created_at)).toISOString() : null,
+        });
+      }
     }
     return signs;
   }
@@ -3028,15 +3080,20 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   }
 
   private async householdsInAnyTurf(auth: IAuthKeyPayload, householdIds: string[]): Promise<Set<string>> {
-    if (householdIds.length === 0) return new Set();
-    const rows = await this.turfsRepo()
-      .db.selectFrom('turf_households')
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('household_id', 'in', householdIds)
-      .select('household_id')
-      .distinct()
-      .execute();
-    return new Set(rows.map((r) => String(r.household_id)));
+    // Chunked: the candidates are a whole list membership, and one IN-list of 100k ids would
+    // exceed the statement's bind-parameter cap. See chunk.ts.
+    const assigned = new Set<string>();
+    for (const ids of chunk(householdIds)) {
+      const rows = await this.turfsRepo()
+        .db.selectFrom('turf_households')
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('household_id', 'in', ids)
+        .select('household_id')
+        .distinct()
+        .execute();
+      for (const r of rows) assigned.add(String(r.household_id));
+    }
+    return assigned;
   }
 
   private formatAddress(d: {

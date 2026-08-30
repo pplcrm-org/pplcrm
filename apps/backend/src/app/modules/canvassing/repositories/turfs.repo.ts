@@ -1,6 +1,7 @@
 import type { Kysely, Transaction } from 'kysely';
 
 import { BaseRepository } from '../../../lib/base.repo';
+import { chunk } from '../../../lib/chunk';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import type { DoorPoint } from '../lib/cutting-engine';
 
@@ -206,41 +207,46 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
     input: { tenant_id: string; household_ids: string[]; boundary_set_id: string | null },
     trx?: Transaction<Models>,
   ): Promise<DoorPoint[]> {
-    if (input.household_ids.length === 0) return [];
+    // The id list is a whole universe (a smart list's membership), so it is read in chunks —
+    // one IN-list holding 100k ids would blow the statement's bind-parameter cap. See chunk.ts.
     const setId = input.boundary_set_id;
-    if (setId == null) {
+    const out: DoorPoint[] = [];
+    for (const ids of chunk(input.household_ids)) {
+      if (setId == null) {
+        const rows = await this.conn(trx)
+          .selectFrom('households')
+          .where('tenant_id', '=', input.tenant_id)
+          .where('id', 'in', ids)
+          .select(['id', 'lat', 'lng'])
+          .execute();
+        for (const r of rows) {
+          out.push({ household_id: String(r.id), lat: r.lat ?? null, lng: r.lng ?? null, boundaryName: null });
+        }
+        continue;
+      }
+
       const rows = await this.conn(trx)
         .selectFrom('households')
-        .where('tenant_id', '=', input.tenant_id)
-        .where('id', 'in', input.household_ids)
-        .select(['id', 'lat', 'lng'])
+        .leftJoin('household_districts as hd', (join) =>
+          join
+            .onRef('hd.household_id', '=', 'households.id')
+            .on('hd.tenant_id', '=', input.tenant_id)
+            .on('hd.set_id', '=', setId),
+        )
+        .where('households.tenant_id', '=', input.tenant_id)
+        .where('households.id', 'in', ids)
+        .select(['households.id as id', 'households.lat as lat', 'households.lng as lng', 'hd.name as boundary_name'])
         .execute();
-      return rows.map((r) => ({
-        household_id: String(r.id),
-        lat: r.lat ?? null,
-        lng: r.lng ?? null,
-        boundaryName: null,
-      }));
+      for (const r of rows) {
+        out.push({
+          household_id: String(r.id),
+          lat: r.lat ?? null,
+          lng: r.lng ?? null,
+          boundaryName: r.boundary_name == null ? null : String(r.boundary_name),
+        });
+      }
     }
-
-    const rows = await this.conn(trx)
-      .selectFrom('households')
-      .leftJoin('household_districts as hd', (join) =>
-        join
-          .onRef('hd.household_id', '=', 'households.id')
-          .on('hd.tenant_id', '=', input.tenant_id)
-          .on('hd.set_id', '=', setId),
-      )
-      .where('households.tenant_id', '=', input.tenant_id)
-      .where('households.id', 'in', input.household_ids)
-      .select(['households.id as id', 'households.lat as lat', 'households.lng as lng', 'hd.name as boundary_name'])
-      .execute();
-    return rows.map((r) => ({
-      household_id: String(r.id),
-      lat: r.lat ?? null,
-      lng: r.lng ?? null,
-      boundaryName: r.boundary_name == null ? null : String(r.boundary_name),
-    }));
+    return out;
   }
 
   /** Distinct households for a set of persons (universe = a people smart list). */
@@ -248,15 +254,20 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
     input: { tenant_id: string; person_ids: string[] },
     trx?: Transaction<Models>,
   ): Promise<string[]> {
-    if (input.person_ids.length === 0) return [];
-    const rows = await this.conn(trx)
-      .selectFrom('persons')
-      .where('tenant_id', '=', input.tenant_id)
-      .where('id', 'in', input.person_ids)
-      .where('household_id', 'is not', null)
-      .select('household_id')
-      .distinct()
-      .execute();
-    return rows.map((r) => String(r.household_id));
+    // Chunked (a people smart list can hold 100k+ ids), deduped across chunks: two persons in
+    // different chunks can share a household, and DISTINCT only dedupes within one statement.
+    const households = new Set<string>();
+    for (const ids of chunk(input.person_ids)) {
+      const rows = await this.conn(trx)
+        .selectFrom('persons')
+        .where('tenant_id', '=', input.tenant_id)
+        .where('id', 'in', ids)
+        .where('household_id', 'is not', null)
+        .select('household_id')
+        .distinct()
+        .execute();
+      for (const r of rows) households.add(String(r.household_id));
+    }
+    return [...households];
   }
 }

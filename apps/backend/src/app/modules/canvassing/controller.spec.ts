@@ -1693,8 +1693,24 @@ describe('CanvassingController', () => {
     expect(cov.doors).toEqual([]);
     // The shaded outlines are what the map falls back to, so they must still be there and must
     // still account for every door — that is the whole reason dropping the doors is acceptable.
+    // Past the cap these counts come from the SQL aggregate, not from per-door rows, so this
+    // also pins that the aggregate and the per-door derivation agree.
     expect(cov.turfs.length).toBeGreaterThanOrEqual(1);
     expect(cov.turfs.reduce((n, t) => n + t.doors, 0)).toBe(COVERAGE_MAX_DOORS + 1);
+    for (const t of cov.turfs) expect(t.path.length).toBeGreaterThanOrEqual(3);
+    // The by-area roll-up is folded from the same per-turf aggregate and still covers every door.
+    expect(cov.byBoundary.reduce((n, a) => n + a.doors, 0)).toBe(COVERAGE_MAX_DOORS + 1);
+
+    // A zoomed-out rectangle holds the same overflow. The pan path counts the doors in view
+    // FIRST and skips the per-door read entirely when they will not be sent — so the answer is
+    // the exact count with no doors, never a sample.
+    const wide = await controller.getCoverage(auth, {
+      range: 'campaign',
+      viewport: { north: 90, south: -90, east: 180, west: -180 },
+    });
+    expect(wide.doors_only).toBe(true);
+    expect(wide.doors).toEqual([]);
+    expect(wide.doors_in_view).toBe(COVERAGE_MAX_DOORS + 1);
   });
 
   it('refreshes a turf from its list, dropping members that left (knocks preserved)', async () => {
