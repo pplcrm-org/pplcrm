@@ -106,6 +106,7 @@ apps/
           base.controller.ts
           base.repo.ts
           canvass-roam-policy.ts
+          chunk.ts
           common-passwords.ts
           crud-router.ts
           csv-stream.ts
