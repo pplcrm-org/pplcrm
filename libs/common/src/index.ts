@@ -182,6 +182,7 @@ export {
   MAX_PAGE_SIZE,
   MAX_ROW_OFFSET,
   MAX_BULK_IDS,
+  MAX_SELECT_ALL_IDS,
   MAX_IMPORT_FILE_BYTES,
   rowCountSchema,
   rowOffsetSchema,

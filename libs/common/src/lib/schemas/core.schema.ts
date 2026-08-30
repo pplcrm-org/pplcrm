@@ -80,6 +80,16 @@ export const MAX_PAGE_SIZE = 5000;
 export const MAX_BULK_IDS = 2000;
 
 /**
+ * Ceiling on the id list "Select all N matching" may hold — the ids-only backend query
+ * (persons/households `getMatchingIds`) stops here, and the grid then SAYS it selected the first
+ * 50,000 rather than claiming all matched. Distinct from MAX_PAGE_SIZE because ids are ~50 bytes
+ * of JSON each where a grid row is kilobytes: 50k ids is a ~1MB response and a workable in-memory
+ * selection, while 50k full rows would not be. Bulk actions already split any held selection into
+ * MAX_BULK_IDS-sized calls, so nothing downstream depends on this fitting one mutation.
+ */
+export const MAX_SELECT_ALL_IDS = 50_000;
+
+/**
  * The CSV import row cap is PER PLAN since 2026-08-05 (5,000 on Free, 100,000 on paid) — see
  * `importRowsPerFile` on PlanDef and `importRowLimitFor` in `../billing/plans.ts`. The old
  * plan-independent `MAX_IMPORT_ROWS = 5000` constant was removed so no stale 5,000 lurks as

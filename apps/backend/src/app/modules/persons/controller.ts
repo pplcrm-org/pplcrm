@@ -5,7 +5,12 @@ import type {
   SortModelType,
   getAllOptionsType,
 } from '../../../../../../libs/common/src';
-import { buildPersonSlug, normalizeCrockford, PUBLIC_ID_LENGTH } from '../../../../../../libs/common/src';
+import {
+  buildPersonSlug,
+  MAX_SELECT_ALL_IDS,
+  normalizeCrockford,
+  PUBLIC_ID_LENGTH,
+} from '../../../../../../libs/common/src';
 import type { OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import { TRPCError } from '@trpc/server';
 import { BadRequestError } from '../../errors/app-errors';
@@ -94,6 +99,28 @@ export class PersonsController extends BaseController<'persons', PersonsRepo> {
       options: queryParams as QueryParams<'persons' | 'households' | 'tags' | 'map_peoples_tags'>,
       tags,
     });
+  }
+
+  /**
+   * The ids of every person matching the same filters `getAllWithAddress` serves, in the same
+   * sort order, up to MAX_SELECT_ALL_IDS — what "select all matching" and record navigation hold.
+   * `count` is the true matched total from the same predicate, so `capped` tells the caller
+   * whether it has the whole answer or the first window of one; the client must then SAY so
+   * rather than claiming every match is selected.
+   */
+  public async getMatchingIds(
+    auth: IAuthKeyPayload,
+    options?: getAllOptionsType,
+  ): Promise<{ ids: string[]; count: number; capped: boolean }> {
+    const { tags, ...queryParams } = options || {};
+    const { rows, count } = await this.getRepo().getAllWithAddress({
+      tenant_id: auth.tenant_id,
+      options: queryParams as QueryParams<'persons' | 'households' | 'tags' | 'map_peoples_tags'>,
+      tags,
+      idsOnly: { limit: MAX_SELECT_ALL_IDS },
+    });
+    const ids = rows.map((r) => String(r['id']));
+    return { ids, count, capped: count > ids.length };
   }
 
   public getByHouseholdId(household_id: string, auth: IAuthKeyPayload, options?: getAllOptionsType) {

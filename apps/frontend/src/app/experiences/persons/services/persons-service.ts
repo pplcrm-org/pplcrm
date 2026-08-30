@@ -98,6 +98,14 @@ export class PersonsService extends AbstractAPIService<DATA_TYPE, UpdatePersonsT
     });
   }
 
+  public override async getMatchingIds(options?: getAllOptionsType) {
+    // Same campaign stamp as getAllWithAddress: the ids must match what the grid shows, and
+    // campaign-scoped filters (support level, subscriber status) resolve against that context.
+    const campaignId = this.campaignContext.activeCampaignId();
+    const scoped = campaignId ? { ...(options ?? {}), campaignId } : options;
+    return this.api.persons.getMatchingIds.query(scoped, { signal: this.ac.signal });
+  }
+
   public getByHouseholdId(id: string, options?: getAllOptionsType) {
     return this.api.persons.getByHouseholdId.query({ id: id, options });
   }

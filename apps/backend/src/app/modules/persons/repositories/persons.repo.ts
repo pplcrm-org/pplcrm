@@ -100,6 +100,33 @@ function resolvePersonSortColumn(colId: unknown, areaSetFields: ReadonlySet<stri
   return null;
 }
 
+/**
+ * Re-resolve one data-query sort target for the ids-only query, which selects nothing but
+ * `persons.id` — so an OUTPUT alias (how the data query sorts on `support_level`, `tags`,
+ * `electoral_area`, …) resolves against nothing there and would make Postgres reject the query.
+ * Aliases that name a plain joined column are mapped back to that column; the genuinely computed
+ * ones (`tags`/`issues` are array_aggs, `household_is_placeholder` is a CASE) return null and the
+ * term is skipped — for those rare sorts the ids come back in the remaining terms' order plus the
+ * id tiebreak, a documented divergence rather than a failed request.
+ */
+function idsOnlySortRef(resolved: string, areaSetFields: ReadonlySet<string>): string | null {
+  if (resolved.includes('.')) return resolved; // already a relation column (persons./households./companies.)
+  switch (resolved) {
+    case 'support_level':
+      return 'cpf.support_level';
+    case 'voting_status':
+      return 'cpf.voting_status';
+    case 'subscription_status':
+      return 'csub.status';
+    case 'electoral_area':
+      return 'hd_areas.electoral_area';
+    case 'any_electoral_area':
+      return 'hd_areas.any_electoral_area';
+    default:
+      return areaSetFields.has(resolved) ? `hd_areas.${resolved}` : null;
+  }
+}
+
 export class PersonsRepo extends BaseRepository<'persons'> {
   constructor() {
     super('persons');
@@ -260,6 +287,14 @@ export class PersonsRepo extends BaseRepository<'persons'> {
       issues?: string[];
       /** Backend-only. Absent on every client-originated call; see `FullScanBatch`. */
       fullScan?: FullScanBatch;
+      /**
+       * Backend-only (set by `getMatchingIds`, never by client input — `getAllOptions` strips
+       * unknown keys). Return only `persons.id` rows, in the caller's grid sort order, up to
+       * `limit` — the ids-only answer "select all matching" and record navigation hold, where a
+       * full row per match would be kilobytes each. `count` is still the true matched total, so
+       * the caller can tell a capped answer from a complete one.
+       */
+      idsOnly?: { limit: number };
     },
     trx?: Transaction<Models>,
   ): Promise<{ rows: Record<string, unknown>[]; count: number }> {
@@ -513,6 +548,34 @@ export class PersonsRepo extends BaseRepository<'persons'> {
     // count on every batch would re-execute the whole predicate for a number the caller does not
     // use, so it is skipped and the batch's own size is reported instead (see the doc comment).
     const totalCount = isFullScan ? null : await countMatchingPeople();
+
+    // Ids-only answer: the same predicate, but selecting nothing beyond persons.id. The grid sort
+    // still applies (the ids feed record navigation, whose J/K order must match the grid), with
+    // each term re-resolved to a relation column — see idsOnlySortRef — and every ORDER BY column
+    // repeated in GROUP BY, since grouping by persons.id alone only covers persons' own columns.
+    // The electoral lateral and the stats lateral ride along only when a filter or a kept sort
+    // term actually reads them; the tag join always rides (it is part of the predicate), which is
+    // what the GROUP BY dedupes.
+    if (input.idsOnly) {
+      const sortTerms: { ref: string; dir: 'asc' | 'desc' }[] = [];
+      for (const term of options.sortModel ?? []) {
+        const resolved = resolvePersonSortColumn(term.colId, areaSetFields);
+        if (resolved == null) continue;
+        const ref = idsOnlySortRef(resolved, areaSetFields);
+        if (ref != null) sortTerms.push({ ref, dir: term.sort });
+      }
+      const sortNeedsElectoral = sortTerms.some((t) => t.ref.startsWith('hd_areas.'));
+      let idsQuery = applyFilters(this.getSelect(trx), countNeedsElectoral || sortNeedsElectoral, needsStats)
+        .select('persons.id')
+        .groupBy(['persons.id', ...sortTerms.map((t) => t.ref)]);
+      for (const t of sortTerms) idsQuery = idsQuery.orderBy(t.ref, t.dir);
+      const idRows = await idsQuery
+        // Deterministic tiebreak so equal sort keys cannot reshuffle between requests.
+        .orderBy('persons.id')
+        .limit(input.idsOnly.limit)
+        .execute();
+      return { count: totalCount ?? idRows.length, rows: idRows };
+    }
 
     // Data query
     const rows = await applyFilters(this.getSelect(trx), true, dataIncludesStats)

@@ -6,7 +6,7 @@ import type {
   UpdateHouseholdsType,
   getAllOptionsType,
 } from '../../../../../../libs/common/src';
-import { slugifyRecordName } from '../../../../../../libs/common/src';
+import { MAX_SELECT_ALL_IDS, slugifyRecordName } from '../../../../../../libs/common/src';
 import { TRPCError } from '@trpc/server';
 import { sql } from 'kysely';
 
@@ -497,6 +497,28 @@ export class HouseholdsController extends BaseController<'households', Household
       options: queryParams as QueryParams<'households' | 'tags' | 'map_households_tags' | 'persons'>,
       tags,
     });
+  }
+
+  /**
+   * The ids of every household matching the same filters `getAllWithPeopleCount` serves, in the
+   * same sort order, up to MAX_SELECT_ALL_IDS — what "select all matching" and record navigation
+   * hold. `count` is the true matched total, so `capped` tells the caller whether it has the
+   * whole answer or the first window of one. The placeholder household is excluded by the shared
+   * predicate, so the ids are always safe to feed bulk actions.
+   */
+  public async getMatchingIds(
+    auth: IAuthKeyPayload,
+    options?: getAllOptionsType,
+  ): Promise<{ ids: string[]; count: number; capped: boolean }> {
+    const { tags, ...queryParams } = options || {};
+    const { rows, count } = await this.getRepo().getAllWithPeopleCount({
+      tenant_id: auth.tenant_id,
+      options: queryParams as QueryParams<'households' | 'tags' | 'map_households_tags' | 'persons'>,
+      tags,
+      idsOnly: { limit: MAX_SELECT_ALL_IDS },
+    });
+    const ids = rows.map((r) => String(r['id']));
+    return { ids, count, capped: count > ids.length };
   }
 
   public getPeopleCount(id: string, auth: IAuthKeyPayload) {

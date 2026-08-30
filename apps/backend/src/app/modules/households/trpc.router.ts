@@ -115,6 +115,11 @@ export const HouseholdsRouter = router({
   getAllWithPeopleCount: authProcedure
     .input(getAllOptions)
     .query(({ input, ctx }) => households.getAllWithPeopleCount(ctx.auth, input)),
+  // Ids-only twin of getAllWithPeopleCount — same filters and sort, ~50 bytes per match. Serves
+  // "select all matching" and record navigation; capped at MAX_SELECT_ALL_IDS with `capped` set.
+  getMatchingIds: authProcedure
+    .input(getAllOptions)
+    .query(({ input, ctx }) => households.getMatchingIds(ctx.auth, input)),
 
   getPeopleCount: authProcedure.input(idSchema).query(({ input, ctx }) => households.getPeopleCount(input, ctx.auth)),
 

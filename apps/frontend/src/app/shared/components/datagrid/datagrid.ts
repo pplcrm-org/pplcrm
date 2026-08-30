@@ -628,6 +628,8 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
   protected readonly allSelectedCount = this.store?.allSelectedCount ?? signal(0);
   protected readonly allSelectedIdSet = this.store?.allSelectedIdSet ?? signal(new Set());
   protected readonly allSelectedIds = this.store?.allSelectedIds ?? signal([]);
+  protected readonly allSelectedMatched = this.store?.allSelectedMatched ?? signal(0);
+  protected readonly allSelectedCapped = this.store?.allSelectedCapped ?? signal(false);
   public archiveMode = signal(false);
   protected colDefsWithEdit: ColDef[] = [SELECTION_COLUMN];
   protected colVisibility = this.store?.colVisibility ?? signal({});
@@ -1393,6 +1395,8 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
     this.allSelectedIds.set([]);
     this.allSelectedIdSet.set(new Set());
     this.allSelectedCount.set(0);
+    this.allSelectedMatched.set(0);
+    this.allSelectedCapped.set(false);
   }
 
   public clearHeaderFilter(field: string) {
@@ -2462,12 +2466,23 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
   protected async selectAllMatching() {
     try {
       if (!this.fetchCtrl) return;
-      const { ids, count } = await this.fetchCtrl.selectAllMatching();
+      const { ids, matched, capped } = await this.fetchCtrl.selectAllMatching();
       this.allSelectedIds.set(ids);
       this.allSelectedIdSet.set(new Set(ids));
-      this.allSelectedCount.set(count);
+      // The count shown and acted on is the ids actually HELD. When the server capped the
+      // answer, saying `matched` here would promise a bulk action on rows the client does not
+      // have — the old behaviour, which silently tagged/deleted only the first page's worth.
+      this.allSelectedCount.set(ids.length);
+      this.allSelectedMatched.set(matched);
+      this.allSelectedCapped.set(capped);
       this.allSelected.set(ids.length > 0);
-      this.alertSvc.showInfo(`Selected ${this.allSelectedCount()} row(s)`);
+      if (capped) {
+        this.alertSvc.showWarn(
+          `Selected the first ${ids.length.toLocaleString()} of ${matched.toLocaleString()} matching rows. Narrow the filter to act on the rest.`,
+        );
+      } else {
+        this.alertSvc.showInfo(`Selected ${ids.length} row(s)`);
+      }
     } catch {
       this.alertSvc.showError('Failed to select all rows');
     }
@@ -2926,11 +2941,18 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
     return path ?? this.router.url;
   }
 
-  /** Hands the currently filtered id set to the detail page so it can walk "N of M filtered" with J/K. */
+  /**
+   * Hands the currently filtered id set to the detail page so it can walk "N of M filtered" with
+   * J/K. Cache-first: the fetch controller reuses its last answer while the grid's rows are
+   * unchanged, so opening records one after another costs one ids fetch, not one per open (the
+   * old path refetched up to a full page of COMPLETE rows on every record open). The total is the
+   * server's true matched count; a record past a capped id window simply shows no pager, exactly
+   * as records past the old 5000-row window did.
+   */
   private captureRecordNavContext(entityKey: string): void {
     this.fetchCtrl
-      .selectAllMatching()
-      .then(({ ids, count }) => this.recordNav.setContext(entityKey, ids, count))
+      .matchingSelectionForNav()
+      .then(({ ids, matched }) => this.recordNav.setContext(entityKey, ids, matched))
       .catch(() => void 0);
   }
 }

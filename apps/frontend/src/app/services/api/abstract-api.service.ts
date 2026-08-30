@@ -81,6 +81,19 @@ export abstract class AbstractAPIService<T extends keyof Models, U> extends TRPC
     }
   }
 
+  /**
+   * Ids of every row matching `options` (same filters and sort as getAll), fetched ids-only so a
+   * 100k-row match costs ~1MB, not hundreds of full rows per page. `capped` is true when the
+   * server stopped at its MAX_SELECT_ALL_IDS ceiling — the caller must then say "first N of M
+   * selected", never "all M". Returns null for entities without the endpoint; the datagrid then
+   * falls back to one full-row page and reports the cap honestly from the response's count.
+   */
+  public getMatchingIds(
+    _options?: getAllOptionsType,
+  ): Promise<{ ids: string[]; count: number; capped: boolean } | null> {
+    return Promise.resolve(null);
+  }
+
   public abstract detachTag(id: string, tag_name: string, type?: 'tag' | 'issue'): Promise<unknown>;
 
   public abstract getAll(options?: getAllOptionsType): Promise<{ rows: Record<string, unknown>[]; count: number }>;

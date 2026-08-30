@@ -119,6 +119,16 @@ function getAllWithAddress() {
   return authProcedure.input(getAllOptions).query(({ input, ctx }) => persons.getAllWithAddress(ctx.auth, input));
 }
 
+/**
+ * Ids-only twin of getAllWithAddress: same filters and sort, but each match costs ~50 bytes
+ * instead of a kilobytes-wide row. Serves "select all matching" and the record-navigation
+ * context; capped at MAX_SELECT_ALL_IDS server-side, with `capped` telling the client to say
+ * "first N of M" instead of "all M".
+ */
+function getMatchingIds() {
+  return authProcedure.input(getAllOptions).query(({ input, ctx }) => persons.getMatchingIds(ctx.auth, input));
+}
+
 function getByHouseholdId() {
   return authProcedure
     .input(z.object({ id: idSchema, options: getAllOptions }))
@@ -305,6 +315,7 @@ export const PersonsRouter = router({
   countByCompanyId: countByCompanyId(),
   countWithCompany: countWithCompany(),
   getAllWithAddress: getAllWithAddress(),
+  getMatchingIds: getMatchingIds(),
   exportCsv: exportCsv(),
   getPotentialDuplicates: getPotentialDuplicates(),
   getDuplicateCounts: getDuplicateCounts(),

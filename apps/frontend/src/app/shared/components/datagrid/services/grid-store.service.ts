@@ -36,6 +36,16 @@ export class GridStoreService {
     source: () => this.filterValues(),
     computation: () => 0,
   });
+  /** True matched total behind a "select all matching" answer (may exceed the ids held). */
+  readonly allSelectedMatched = linkedSignal<Record<string, unknown>, number>({
+    source: () => this.filterValues(),
+    computation: () => 0,
+  });
+  /** True when the held ids are only the first server-capped window of the matching set. */
+  readonly allSelectedCapped = linkedSignal<Record<string, unknown>, boolean>({
+    source: () => this.filterValues(),
+    computation: () => false,
+  });
   readonly selectionStickyWidth = signal<number>(48);
   readonly pageIndex = signal<number>(0);
   readonly pageSize = signal<number>(25);

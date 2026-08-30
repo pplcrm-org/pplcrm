@@ -126,6 +126,13 @@ export class HouseholdsService extends AbstractAPIService<'households', never> {
     });
   }
 
+  public override async getMatchingIds(options?: getAllOptionsType) {
+    // Same campaign stamp as getAllWithPeopleCount, so the ids match what the grid shows.
+    const campaignId = this.campaignContext.activeCampaignId();
+    const scoped = campaignId ? { ...(options ?? {}), campaignId } : options;
+    return this.api.households.getMatchingIds.query(scoped, { signal: this.ac.signal });
+  }
+
   public exportCsv(input: ExportCsvInputType): Promise<ExportCsvResponseType> {
     return this.api.households.exportCsv.mutate(input);
   }

@@ -127,7 +127,11 @@ export const GRIDS_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'select-all', text: 'Selecting beyond one page' },
       {
         kind: 'p',
-        text: 'The header checkbox selects the visible page. If more rows match your filters, the grid offers **Select all N rows**. One click extends the selection to every match, and the bar confirms “All N rows are selected.”',
+        text: 'The header checkbox selects the visible page. If more rows match your filters, the grid offers **Select all N rows**. One click extends the selection to every match, and the bar confirms “All N rows are selected.” Selections this large are held as ids only, so even tens of thousands of matches select instantly.',
+      },
+      {
+        kind: 'p',
+        text: 'For very large results the selection stops at 50,000 rows, and the bar says so plainly: “The first 50,000 of N matching rows are selected.” Bulk actions then apply to exactly those rows — narrow the filter and repeat to reach the rest. The grid never claims to have selected rows it is not actually holding.',
       },
       { kind: 'h2', id: 'actions', text: 'What you can do with a selection' },
       {

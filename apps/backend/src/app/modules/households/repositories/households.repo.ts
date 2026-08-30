@@ -91,6 +91,26 @@ function resolveHouseholdSortColumn(colId: unknown, areaSetFields: ReadonlySet<s
   return null;
 }
 
+/**
+ * Re-resolve one data-query sort target for the ids-only query, which selects nothing but
+ * `households.id` — an OUTPUT alias (how the data query sorts on `electoral_area`, `tags`,
+ * `persons_count`, …) resolves against nothing there and would make Postgres reject the query.
+ * The two electoral aliases map back to their lateral columns; the computed ones (aggregates and
+ * the placeholder CASE) return null and the term is skipped — those rare sorts leave the ids in
+ * the remaining terms' order plus the id tiebreak, a documented divergence, not a failed request.
+ */
+function idsOnlySortRef(resolved: string, areaSetFields: ReadonlySet<string>): string | null {
+  if (resolved.includes('.')) return resolved; // already a households.* column
+  switch (resolved) {
+    case 'electoral_area':
+      return 'hd_areas.electoral_area';
+    case 'any_electoral_area':
+      return 'hd_areas.any_electoral_area';
+    default:
+      return areaSetFields.has(resolved) ? `hd_areas.${resolved}` : null;
+  }
+}
+
 export class HouseholdRepo extends BaseRepository<'households'> {
   constructor() {
     super('households');
@@ -276,6 +296,14 @@ export class HouseholdRepo extends BaseRepository<'households'> {
       issues?: string[];
       /** Backend-only. Absent on every client-originated call; see `FullScanBatch`. */
       fullScan?: FullScanBatch;
+      /**
+       * Backend-only (set by `getMatchingIds`, never by client input — `getAllOptions` strips
+       * unknown keys). Return only `households.id` rows, in the caller's grid sort order, up to
+       * `limit`; `count` stays the true matched total so a capped answer is tellable from a
+       * complete one. The placeholder household is already excluded by the shared predicate, so
+       * an ids answer can never hand the caller the one household bulk actions must not touch.
+       */
+      idsOnly?: { limit: number };
     },
     trx?: Transaction<Models>,
   ): Promise<{ rows: Record<string, unknown>[]; count: number }> {
@@ -482,6 +510,32 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     // count on every batch would re-execute the whole predicate for a number the caller does not
     // use, so it is skipped and the batch's own size is reported instead (see the doc comment).
     const totalCount = isFullScan ? null : await countMatchingHouseholds();
+
+    // Ids-only answer: the same predicate, selecting nothing beyond households.id. The grid sort
+    // still applies (the ids feed record navigation, whose J/K order must match the grid), each
+    // term re-resolved to a relation column — see idsOnlySortRef — and every ORDER BY column
+    // repeated in GROUP BY, since grouping by households.id alone only covers households' own
+    // columns. The laterals ride along only when a filter or a kept sort term reads them.
+    if (input.idsOnly) {
+      const sortTerms: { ref: string; dir: 'asc' | 'desc' }[] = [];
+      for (const term of options.sortModel ?? []) {
+        const resolved = resolveHouseholdSortColumn(term.colId, areaSetFields);
+        if (resolved == null) continue;
+        const ref = idsOnlySortRef(resolved, areaSetFields);
+        if (ref != null) sortTerms.push({ ref, dir: term.sort });
+      }
+      const sortNeedsElectoral = sortTerms.some((t) => t.ref.startsWith('hd_areas.'));
+      let idsQuery = applyFilters(this.getSelect(trx), countNeedsElectoral || sortNeedsElectoral, needsStats)
+        .select('households.id')
+        .groupBy(['households.id', ...sortTerms.map((t) => t.ref)]);
+      for (const t of sortTerms) idsQuery = idsQuery.orderBy(t.ref, t.dir);
+      const idRows = await idsQuery
+        // Deterministic tiebreak so equal sort keys cannot reshuffle between requests.
+        .orderBy('households.id')
+        .limit(input.idsOnly.limit)
+        .execute();
+      return { count: totalCount ?? idRows.length, rows: idRows };
+    }
 
     // Data query
     const rows = await applyFilters(this.getSelect(trx), true, dataIncludesStats)

@@ -274,6 +274,23 @@
     >
   </div>
   } @if (allSelected()) {
+  <!-- Capped answers say so: claiming "all N" while holding the first window silently ran bulk
+       actions on a fraction of what the user believed was selected. -->
+  @if (allSelectedCapped()) {
+  <div class="alert alert-warning flex items-center gap-2 py-2 text-sm">
+    <span
+      i18n="Datagrid|Message indicating only the first window of matching rows is selected@@datagrid.selection.firstOfMatching"
+      >The first {{ allSelectedCount() }} of {{ allSelectedMatched() }} matching rows are selected. Narrow the filter to
+      act on the rest.</span
+    >
+    <a
+      class="link hover:no-underline"
+      (click)="clearAllSelection()"
+      i18n="Datagrid|Button to clear current selection@@datagrid.selection.clear"
+      >Clear selection</a
+    >
+  </div>
+  } @else {
   <div class="alert alert-success flex items-center gap-2 py-2 text-sm">
     <span i18n="Datagrid|Message indicating all matching rows are selected@@datagrid.selection.allSelected"
       >All {{ allSelectedCount() || totalCountAll() }} rows are selected.</span
@@ -285,7 +302,7 @@
       >Clear selection</a
     >
   </div>
-  } @if (hasSelectionState()) {
+  } } @if (hasSelectionState()) {
   <!-- Bulk action bar: appears on any selection (§2) -->
   <div class="mb-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-neutral bg-base-100 px-3 py-2 text-sm">
     <span class="font-semibold tabular-nums"
