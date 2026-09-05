@@ -122,6 +122,26 @@ is outside the `local/no-unscoped-db-query` rule's scope (`modules/**` only).
   job, using the same `github.sha` as the image tag. The failure message distinguishes
   "answered with a different build (old revision still serving)" from "never answered 200".
 
+## The daily-review layer — a launchd job on the operator's Mac (`tools/ops/daily-health/`)
+
+Neither half above tells the operator about slow-burn problems (a failed CI run nobody opened,
+Postgres storage creeping toward the 80% alert, a Sentry issue growing daily), so a third layer
+runs **once a day on the operator's MacBook**: `collect.sh` gathers facts (the four HTTP checks,
+latest deploy + failed CI runs via `gh`, alerts fired / container-app restarts / Postgres 24 h
+peaks via `az`, optional Sentry), `run.sh` pipes them into headless Claude (`claude -p --tools ""`,
+no tools, `PROMPT.md` fixes the format and the GREEN/YELLOW/RED rules), saves the report under
+`~/pplcrm-ops/` and shows a macOS notification. `install.sh` renders the launchd template and
+loads it (08:17 daily; launchd runs it late if the Mac was asleep). Rules that keep it honest:
+
+- It is a **review**, never detection. It only runs while the Mac is awake and it does not page
+  anyone. Anything that must fire when the service is down stays in Azure Monitor.
+- Every data source fails independently and is reported as a **data gap** (`AZURE UNAVAILABLE`
+  after the `az` session expires — fix is `az login`; `NOT CONFIGURED` for Sentry until the
+  token/org/project are in `~/.config/pplcrm-ops/env`). The prompt forbids treating a missing
+  section as "fine".
+- Claude Code's built-in `CronCreate` scheduler is **not** usable for this: its jobs are
+  session-only and expire after 7 days. launchd is the persistent mechanism on a Mac.
+
 ## Gotchas
 
 - `enableWorkerProbe` starts `false`: flipping it on before the backend serving `/healthz/worker`

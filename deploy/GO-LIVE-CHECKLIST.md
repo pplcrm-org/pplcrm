@@ -317,6 +317,13 @@ Re-verified against the live Container App: all expected env vars present (incl.
       tests bill per execution and those two surfaces are static Cloudflare deployments; at launch,
       paying ~CAD 7/mo each to catch a broken Pages deploy or an expired custom-domain cert is
       worth it. The api and worker probes are already on and stay on.
+- [ ] **Keep the daily health report running on the operator's Mac.** `tools/ops/daily-health/`
+      (added 2026-08-31) is a launchd job that once a day collects the HTTP checks, latest deploy
+      and failed CI runs, Azure alerts/restarts/Postgres peaks and (optionally) Sentry, has
+      headless Claude write a GREEN/YELLOW/RED summary to `~/pplcrm-ops/latest.md` and shows a
+      macOS notification. Install/refresh with `tools/ops/daily-health/install.sh`; when the
+      report shows "AZURE UNAVAILABLE", run `az login` on that Mac. It is a review layer only —
+      the Azure probes above remain the thing that pages.
 - [ ] Consider putting `api.pplcrm.com` behind the Cloudflare proxy (currently DNS-only/grey for the managed
       cert). Optional. **Decide together with the `TRUST_PROXY` measurement below.** Note (2026-08-28):
       this is the actual denial-of-service protection for the API domain. The application-level rate
