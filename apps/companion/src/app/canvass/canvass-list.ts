@@ -12,6 +12,7 @@ import {
   hasVoted,
   householdStance,
   isAttempted,
+  livingResidents,
   residentSummary,
 } from './canvass-derive';
 import { CanvassSegmentPicker } from './canvass-segment-picker';
@@ -157,6 +158,14 @@ type ListFilter = 'all' | 'remaining' | 'visited';
                 <span class="block truncate font-medium">{{ entry.address }}</span>
                 <span class="block truncate text-xs text-base-content/70">{{ buildingSubtitle(entry) }}</span>
               </span>
+              @if (buildingPeople(entry); as n) {
+                <span
+                  class="flex shrink-0 items-center gap-1 text-xs tabular-nums text-base-content/60"
+                  [title]="peopleTitle(n)"
+                >
+                  <pc-icon name="user-group" [size]="4" />{{ n }}
+                </span>
+              }
               <pc-icon name="chevron-right" [size]="5" class="shrink-0 text-base-content/40" />
             } @else {
               <span
@@ -178,6 +187,18 @@ type ListFilter = 'all' | 'remaining' | 'visited';
               <span class="flex shrink-0 items-center gap-1.5">
                 <!-- Marks before the status chip: they change what you ASK at the door,
                      which matters before you know whether anyone answered it. -->
+                <!-- How many people to expect. The names line truncates on a phone-width
+                     row, so past two residents the count is otherwise invisible. One icon
+                     plus a number, never a row of figures: five glyphs would crowd out the
+                     marks that change the ask. -->
+                @if (peopleCount(entry.household); as n) {
+                  <span
+                    class="flex items-center gap-1 text-xs tabular-nums text-base-content/60"
+                    [title]="peopleTitle(n)"
+                  >
+                    <pc-icon name="user-group" [size]="4" />{{ n }}
+                  </span>
+                }
                 <!-- Only an OWED sign is a mark on the row. A door whose sign is already
                      delivered has nothing left for the walker to do about it, and a mark
                      there would send them looking for a job that is finished. -->
@@ -265,6 +286,11 @@ export class CanvassList {
   protected accentClass(entry: WalkEntry): string {
     if (entry.kind === 'building') return 'border-l-base-300';
     return stanceStyle(householdStance(entry.household))?.accent ?? 'border-l-base-300';
+  }
+
+  /** Everyone on file across the building's units, so a hallway says its size in people too. */
+  protected buildingPeople(entry: Extract<WalkEntry, { kind: 'building' }>): number {
+    return entry.units.reduce((n, u) => n + livingResidents(u).length, 0);
   }
 
   protected buildingSubtitle(entry: Extract<WalkEntry, { kind: 'building' }>): string {
@@ -368,6 +394,14 @@ export class CanvassList {
     // Named with the side in force ("the odd side of James Street"), because the counts
     // follow the side — an unnarrated narrowing would read as doors going missing.
     return `${this.scopeAttempted()} of ${this.scopeTotal()} doors attempted on ${this.scopeDescription()}`;
+  }
+
+  protected peopleCount(h: CompanionHousehold): number {
+    return livingResidents(h).length;
+  }
+
+  protected peopleTitle(n: number): string {
+    return n === 1 ? '1 person on file here' : `${n} people on file here`;
   }
 
   protected residents(h: CompanionHousehold): string {

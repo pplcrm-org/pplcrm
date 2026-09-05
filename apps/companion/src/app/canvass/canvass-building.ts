@@ -3,7 +3,15 @@ import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/c
 import type { CompanionHousehold } from '@common';
 import { Icon } from '@icons/icon';
 
-import { doorStatus, doorStatusLabel, hasVoted, householdStance, isAttempted, residentSummary } from './canvass-derive';
+import {
+  doorStatus,
+  doorStatusLabel,
+  hasVoted,
+  householdStance,
+  isAttempted,
+  livingResidents,
+  residentSummary,
+} from './canvass-derive';
 import { CanvassStore } from './canvass-store';
 import { stanceStyle, statusBadgeClass, type StanceStyle } from './canvass-ui';
 
@@ -68,6 +76,16 @@ import { stanceStyle, statusBadgeClass, type StanceStyle } from './canvass-ui';
                 }
               </span>
               <span class="flex shrink-0 items-center gap-1.5">
+                <!-- Same people-count mark as the walk list: how many to expect behind
+                     this unit's door, since the names line truncates. -->
+                @if (peopleCount(u); as n) {
+                  <span
+                    class="flex items-center gap-1 text-xs tabular-nums text-base-content/60"
+                    [title]="peopleTitle(n)"
+                  >
+                    <pc-icon name="user-group" [size]="4" />{{ n }}
+                  </span>
+                }
                 @if (u.yard_sign?.status === 'requested') {
                   <pc-icon name="yard-sign" [size]="4" class="text-info" title="Owed a yard sign" />
                 }
@@ -123,6 +141,14 @@ export class CanvassBuilding {
 
   protected open(householdId: string): void {
     this.store.view.set({ kind: 'household', household_id: householdId });
+  }
+
+  protected peopleCount(h: CompanionHousehold): number {
+    return livingResidents(h).length;
+  }
+
+  protected peopleTitle(n: number): string {
+    return n === 1 ? '1 person on file here' : `${n} people on file here`;
   }
 
   protected residents(h: CompanionHousehold): string {

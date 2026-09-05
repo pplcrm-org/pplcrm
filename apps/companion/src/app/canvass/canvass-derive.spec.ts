@@ -18,6 +18,7 @@ import {
   householdStance,
   isAttempted,
   isTempPersonId,
+  livingResidents,
   matchesSide,
   meStats,
   nextDoor,
@@ -525,6 +526,21 @@ describe('hasVoted', () => {
     // "Will vote" is an intention, not a ballot.
     expect(hasVoted(household({ people: [person({ voting_status: 'will_vote' })] }))).toBe(false);
     expect(hasVoted(household({ people: [person()] }))).toBe(false);
+  });
+});
+
+describe('livingResidents', () => {
+  it('counts everyone on file except the reported dead, matching the names line', () => {
+    const h = household({
+      people: [
+        person({ id: '1', name: 'Heather Gagnon' }),
+        person({ id: '2', name: 'Ross Gagnon', deceased: true }),
+        person({ id: '3', name: 'Amy Gagnon', dnc: true }),
+      ],
+    });
+    // DNC residents stay in the count: they still live there. Only the deceased drop.
+    expect(livingResidents(h).map((p) => p.id)).toEqual(['1', '3']);
+    expect(livingResidents(household())).toEqual([]);
   });
 });
 

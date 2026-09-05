@@ -480,6 +480,16 @@ export function hasVoted(h: CompanionHousehold): boolean {
 }
 
 /**
+ * The residents a door row speaks for: everyone on file who is not reported dead.
+ *
+ * The one filter `residentSummary` and the row's people count share, so the count on a row
+ * can never disagree with the names printed under it.
+ */
+export function livingResidents(h: CompanionHousehold): CompanionPerson[] {
+  return h.people.filter((p) => !p.deceased);
+}
+
+/**
  * Residents as one line, with the surname said once.
  *
  * "Heather Gagnon, Ross Gagnon" is the same information as "Heather & Ross Gagnon" and
@@ -489,7 +499,7 @@ export function hasVoted(h: CompanionHousehold): boolean {
  * that person at the door is the failure this whole feature exists to prevent.
  */
 export function residentSummary(h: CompanionHousehold): string {
-  const living = h.people.filter((p) => !p.deceased);
+  const living = livingResidents(h);
   if (living.length === 0) return '';
   const surnames = new Set(living.map((p) => p.last_name?.trim().toLowerCase()).filter(Boolean));
   const shared = surnames.size === 1 ? living[0]?.last_name?.trim() : null;
