@@ -607,9 +607,15 @@ export interface CompanionTurfPayload {
    */
   turf_id: string;
   turf_name: string;
+  /**
+   * What the outing is for / how the volunteer moves. Optional so a payload from a
+   * pre-modes server still parses; the companion reads absence as canvass/walk.
+   */
+  mode?: TurfMode;
+  travel?: TurfTravel;
   /** Whose name results save under — the assignment's volunteer. */
   canvasser_name: string;
-  /** Collapsible door script (campaign-configured; empty string = none). */
+  /** Collapsible door script (campaign-configured, per turf mode; empty string = none). */
   script: string;
   /** Issue-chip vocabulary (campaign-configured). */
   issues: string[];
@@ -659,11 +665,14 @@ export const CompanionLocationPingObj = z.union([
 ]);
 export type CompanionLocationPingType = z.infer<typeof CompanionLocationPingObj>;
 
-/** Staff-configured survey vocabulary (campaigns.canvass_issues/script). */
+/** Staff-configured survey vocabulary (campaigns.canvass_issues/script + per-mode scripts). */
 export const UpdateCompanionSettingsObj = z.object({
   campaign_id: idSchema.optional(),
   issues: z.array(z.string().trim().min(1).max(80)).max(30),
   script: z.string().trim().max(4000).nullable(),
+  /** Per-mode door scripts. Omitted = leave alone (older clients); null = clear (falls back to `script`). */
+  gotv_script: z.string().trim().max(4000).nullable().optional(),
+  delivery_script: z.string().trim().max(4000).nullable().optional(),
   /** Optional so older clients keep working; omitted = leave the stored value alone. */
   location_precision: z.enum(LOCATION_PRECISIONS).optional(),
 });

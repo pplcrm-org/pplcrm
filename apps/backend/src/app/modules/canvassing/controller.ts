@@ -25,6 +25,8 @@ import type {
   MapViewportType,
   KnockResponse,
   SupportLevel,
+  TurfMode,
+  TurfTravel,
   UpdateCompanionSettingsType,
   UpdateTurfType,
   VotingStatus,
@@ -165,6 +167,10 @@ export interface TurfListItem {
   id: string;
   name: string;
   status: TurfDisplayStatus;
+  /** What the outing is for — controls chips, door screen and report words. */
+  mode: TurfMode;
+  /** How the volunteer moves — street view (walk) or ordered route view (drive). */
+  travel: TurfTravel;
   list_id: string | null;
   list_name: string | null;
   /**
@@ -561,6 +567,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         id: r.id,
         name: r.name,
         status: this.displayStatus(r, attempted, lastAt, roster.length > 0),
+        mode: r.mode,
+        travel: r.travel,
         list_id: r.list_id,
         list_name: r.list_name,
         boundary_name: r.boundary_name,
@@ -1272,6 +1280,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           campaign_id: campaignId,
           name: `Turf ${n}`,
           status: 'draft',
+          mode: input.mode ?? 'canvass',
+          travel: input.travel ?? 'walk',
           list_id: input.list_id,
           target_doors: input.doors_per_turf,
           centroid_lat: cluster.centroid_lat,
@@ -1541,6 +1551,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       }),
       name: input.name,
       status: 'draft',
+      mode: input.mode ?? 'canvass',
+      travel: input.travel ?? 'walk',
       list_id: input.list_id != null ? String(input.list_id) : null,
       notes: input.notes ?? null,
       createdby_id: auth.user_id,
@@ -1704,8 +1716,11 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       campaign_name: campaign.name,
       turf_id,
       turf_name: String(turf.name),
+      mode: turf.mode,
+      travel: turf.travel,
       canvasser_name: canvasserName,
-      script: campaign.script,
+      // The door script follows the turf's mode (GOTV/delivery fall back to the canvass one).
+      script: this.scriptForMode(turf.mode, campaign),
       issues: campaign.issues,
       expires_at: assignment.expires_at ? assignment.expires_at.toISOString() : null,
       households,
@@ -2729,15 +2744,15 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     return parsed;
   }
 
-  /** Campaign display name + companion survey vocabulary for a turf's campaign. */
+  /** Campaign display name + companion survey vocabulary + per-mode scripts for a turf's campaign. */
   private async companionCampaign(
     tenant_id: string,
     campaign_id: string,
-  ): Promise<{ name: string; issues: string[]; script: string }> {
+  ): Promise<{ name: string; issues: string[]; script: string; gotv_script: string; delivery_script: string }> {
     if (campaign_id) {
       const row = await this.knocks.db
         .selectFrom('campaigns')
-        .select(['name', 'canvass_issues', 'canvass_script'])
+        .select(['name', 'canvass_issues', 'canvass_script', 'gotv_script', 'delivery_script'])
         .where('tenant_id', '=', tenant_id)
         .where('id', '=', campaign_id)
         .executeTakeFirst();
@@ -2746,10 +2761,22 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           name: String(row.name),
           issues: Array.isArray(row.canvass_issues) ? row.canvass_issues.map(String) : [],
           script: row.canvass_script ?? '',
+          gotv_script: row.gotv_script ?? '',
+          delivery_script: row.delivery_script ?? '',
         };
       }
     }
-    return { name: '', issues: [], script: '' };
+    return { name: '', issues: [], script: '', gotv_script: '', delivery_script: '' };
+  }
+
+  /** The door script for one turf mode; an unset per-mode script falls back to the canvass one. */
+  private scriptForMode(
+    mode: TurfMode,
+    campaign: { script: string; gotv_script: string; delivery_script: string },
+  ): string {
+    if (mode === 'gotv') return campaign.gotv_script || campaign.script;
+    if (mode === 'delivery') return campaign.delivery_script || campaign.script;
+    return campaign.script;
   }
 
   private async personFirstLast(tenant_id: string, person_id: string): Promise<string> {
@@ -2917,6 +2944,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     campaign_name: string;
     issues: string[];
     script: string;
+    gotv_script: string;
+    delivery_script: string;
     location_precision: LocationPrecision;
   }> {
     const resolved = await this.campaignsRepo.resolveForWrite({ tenant_id: auth.tenant_id, campaign_id });
@@ -2929,6 +2958,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       campaign_name: campaign.name,
       issues: campaign.issues,
       script: campaign.script,
+      gotv_script: campaign.gotv_script,
+      delivery_script: campaign.delivery_script,
       location_precision: precisionOf(precisions, String(resolved)),
     };
   }
@@ -2943,6 +2974,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       .set({
         canvass_issues: input.issues,
         canvass_script: input.script ?? null,
+        // Omitted = leave alone (older clients); null = clear, falling back to the canvass script.
+        ...(input.gotv_script !== undefined ? { gotv_script: input.gotv_script } : {}),
+        ...(input.delivery_script !== undefined ? { delivery_script: input.delivery_script } : {}),
         // Omitted = leave alone, so an older client saving the survey vocabulary can never
         // silently reset a campaign's location privacy choice.
         ...(input.location_precision != null ? { canvass_location_precision: input.location_precision } : {}),

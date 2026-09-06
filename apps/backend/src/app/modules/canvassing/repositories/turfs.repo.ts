@@ -9,6 +9,10 @@ export interface TurfRow {
   id: string;
   name: string;
   status: string;
+  /** What the outing is for — 'canvass' | 'gotv' | 'delivery'. */
+  mode: 'canvass' | 'gotv' | 'delivery';
+  /** How the volunteer moves — 'walk' | 'drive'. */
+  travel: 'walk' | 'drive';
   list_id: string | null;
   list_name: string | null;
   /** The named area this turf covers, or null when its doors sit inside no area — see turf-boundary.ts. */
@@ -51,6 +55,8 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
         'turfs.id as id',
         'turfs.name as name',
         'turfs.status as status',
+        'turfs.mode as mode',
+        'turfs.travel as travel',
         'turfs.list_id as list_id',
         'lists.name as list_name',
         'turfs.boundary_name as boundary_name',
@@ -84,6 +90,8 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
         'turfs.id as id',
         'turfs.name as name',
         'turfs.status as status',
+        'turfs.mode as mode',
+        'turfs.travel as travel',
         'turfs.list_id as list_id',
         'lists.name as list_name',
         'turfs.boundary_name as boundary_name',
@@ -106,6 +114,8 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
       id: unknown;
       name: unknown;
       status: unknown;
+      mode: unknown;
+      travel: unknown;
       list_id: unknown;
       list_name: unknown;
       boundary_name: unknown;
@@ -122,6 +132,9 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
       id: String(r.id),
       name: String(r.name),
       status: String(r.status),
+      // Tolerant narrowing: an unknown stored value reads as the default, never crashes a page.
+      mode: r.mode === 'gotv' || r.mode === 'delivery' ? r.mode : 'canvass',
+      travel: r.travel === 'drive' ? 'drive' : 'walk',
       list_id: r.list_id == null ? null : String(r.list_id),
       list_name: r.list_name ? String(r.list_name) : null,
       boundary_name: r.boundary_name ? String(r.boundary_name) : null,
@@ -143,6 +156,8 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
     id: string;
     name: string;
     status: string;
+    mode: 'canvass' | 'gotv' | 'delivery';
+    travel: 'walk' | 'drive';
     list_id: string | null;
     boundary_name: string | null;
     boundary_set_id: string | null;
@@ -152,7 +167,18 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
     createdby_id: string;
   } | null> {
     const row = await this.getSelect(trx)
-      .select(['id', 'name', 'status', 'list_id', 'boundary_name', 'boundary_set_id', 'campaign_id', 'createdby_id'])
+      .select([
+        'id',
+        'name',
+        'status',
+        'mode',
+        'travel',
+        'list_id',
+        'boundary_name',
+        'boundary_set_id',
+        'campaign_id',
+        'createdby_id',
+      ])
       .where('tenant_id', '=', input.tenant_id)
       .where('id', '=', input.id)
       .executeTakeFirst();
@@ -161,6 +187,8 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
       id: String(row.id),
       name: String(row.name),
       status: String(row.status),
+      mode: row.mode === 'gotv' || row.mode === 'delivery' ? row.mode : 'canvass',
+      travel: row.travel === 'drive' ? 'drive' : 'walk',
       list_id: row.list_id == null ? null : String(row.list_id),
       boundary_name: row.boundary_name == null ? null : String(row.boundary_name),
       boundary_set_id: row.boundary_set_id == null ? null : String(row.boundary_set_id),
