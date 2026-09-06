@@ -2232,4 +2232,61 @@ describe('CanvassingController', () => {
       expect(shift.end_reason).toBe('timeout');
     });
   });
+
+  describe('universe presets and the Everyone cut', () => {
+    it('ensureUniverseList creates a dynamic people list carrying the preset rules', async () => {
+      const res = await controller.ensureUniverseList(auth, { preset: 'supporters' });
+      expect(res.reused).toBe(false);
+      expect(res.name).toBe('All supporters');
+
+      const row = await db
+        .selectFrom('lists')
+        .selectAll()
+        .where('tenant_id', '=', s.tenantId)
+        .where('id', '=', res.list_id)
+        .executeTakeFirstOrThrow();
+      expect(row.object).toBe('people');
+      expect(row.is_dynamic).toBe(true);
+      const definition = row.definition as { advancedFilterModel?: { rules?: { field?: string }[] } } | null;
+      expect(definition?.advancedFilterModel?.rules?.map((r) => r.field)).toEqual(['support_level', 'support_level']);
+    });
+
+    it('asking for the same preset again reuses the existing list by name', async () => {
+      const first = await controller.ensureUniverseList(auth, { preset: 'not_recent', days: 14 });
+      const second = await controller.ensureUniverseList(auth, { preset: 'not_recent', days: 14 });
+      expect(second.list_id).toBe(first.list_id);
+      expect(second.reused).toBe(true);
+      // A different window is a different list — the name carries the X.
+      const other = await controller.ensureUniverseList(auth, { preset: 'not_recent', days: 60 });
+      expect(other.list_id).not.toBe(first.list_id);
+    });
+
+    it('previewCut with no list is the Everyone universe: every located household, none unplaced', async () => {
+      const preview = await controller.previewCut(auth, { list_id: null, doors_per_turf: 20 });
+      // The seed holds 40 located + 3 unlocated households; Everyone only ever
+      // resolves located doors, so nothing can come back unplaced for want of
+      // coordinates.
+      expect(preview.doors).toBe(40);
+      expect(preview.unplaced).toBe(0);
+    });
+
+    it('cutTurfs with no list stores list_id NULL, and refreshFromList still works on those turfs', async () => {
+      const res = await controller.cutTurfs(auth, { list_id: null, doors_per_turf: 20 });
+      expect(res.created).toBeGreaterThanOrEqual(2);
+
+      const turfs = await controller.getTurfs(auth);
+      for (const t of turfs) {
+        expect(t.list_id).toBeNull();
+        expect(t.list_name).toBeNull();
+      }
+      const total = turfs.reduce((n, t) => n + t.door_count, 0);
+      expect(total).toBe(40);
+
+      // Refresh re-resolves the Everyone universe instead of refusing for want of a list.
+      const first = turfs[0];
+      if (!first) throw new Error('expected a turf');
+      const refresh = await controller.refreshFromList(auth, first.id);
+      expect(refresh).toEqual({ added: 0, removed: 0, boundary_map_missing: false });
+    });
+  });
 });

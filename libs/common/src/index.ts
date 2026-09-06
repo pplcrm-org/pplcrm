@@ -108,6 +108,7 @@ export type {
   AddTurfType,
   UpdateTurfType,
   CutTurfsType,
+  EnsureUniverseListType,
   AssignTurfType,
   RemoveCanvasserType,
   FieldReportRangeType,
@@ -263,6 +264,7 @@ export {
   AddTurfObj,
   UpdateTurfObj,
   CutTurfsObj,
+  EnsureUniverseListObj,
   AssignTurfObj,
   RemoveCanvasserObj,
   FieldReportRangeObj,
@@ -429,6 +431,17 @@ export { DEFAULT_LINK_SUBDOMAIN, MAX_DNS_LABEL_LENGTH, isValidDnsLabel, normaliz
 export { normalizeE164 } from './lib/phone';
 export type { SystemListKey, SystemListDef } from './lib/system-lists';
 export { SYSTEM_LIST_KEYS, SYSTEM_LISTS, systemListDefinition } from './lib/system-lists';
+export type { CanvassUniversePreset, ListBackedUniversePreset } from './lib/canvass-universes';
+export {
+  CANVASS_UNIVERSE_PRESETS,
+  CANVASS_UNIVERSE_LABELS,
+  CANVASS_UNIVERSE_DESCRIPTIONS,
+  LIST_BACKED_UNIVERSE_PRESETS,
+  DEFAULT_NOT_RECENT_DAYS,
+  universeListName,
+  universeListDescription,
+  universeListRules,
+} from './lib/canvass-universes';
 
 export type { DataRegion, DataRegionChoice } from './lib/data-residency';
 export {

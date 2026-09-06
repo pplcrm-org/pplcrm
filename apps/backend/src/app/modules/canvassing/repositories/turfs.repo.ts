@@ -277,6 +277,22 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
     return out;
   }
 
+  /**
+   * Every located household in the workspace — the "Everyone" universe, cut
+   * with no list at all (turfs.list_id NULL). Only located doors: the cutter
+   * clusters on coordinates, and an unlocated door can never be placed anyway.
+   */
+  public async getLocatedHouseholdIds(tenant_id: string, trx?: Transaction<Models>): Promise<string[]> {
+    const rows = await this.conn(trx)
+      .selectFrom('households')
+      .where('tenant_id', '=', tenant_id)
+      .where('lat', 'is not', null)
+      .where('lng', 'is not', null)
+      .select('id')
+      .execute();
+    return rows.map((r) => String(r.id));
+  }
+
   /** Distinct households for a set of persons (universe = a people smart list). */
   public async getHouseholdIdsForPersons(
     input: { tenant_id: string; person_ids: string[] },

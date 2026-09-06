@@ -5,6 +5,7 @@ import {
   AssignTurfObj,
   CoverageRequestObj,
   CutTurfsObj,
+  EnsureUniverseListObj,
   FieldReportRangeObj,
   RemoveCanvasserObj,
   UpdateCompanionSettingsObj,
@@ -35,7 +36,11 @@ export const CanvassingRouter = router({
   // One turf, opened: its doors, what happened at each, and who is walking it.
   getTurfDetail: authProcedure.input(idSchema).query(({ ctx, input }) => controller.getTurfDetail(ctx.auth, input)),
 
-  // Cut new turfs.
+  // Cut new turfs. `ensureUniverseList` backs the wizard's named universe
+  // presets — it creates (or finds) the smart list a preset stands for.
+  ensureUniverseList: authProcedure
+    .input(EnsureUniverseListObj)
+    .mutation(({ ctx, input }) => controller.ensureUniverseList(ctx.auth, input)),
   previewCut: authProcedure.input(CutTurfsObj).query(({ ctx, input }) => controller.previewCut(ctx.auth, input)),
   cutTurfs: authProcedure.input(CutTurfsObj).mutation(({ ctx, input }) => controller.cutTurfs(ctx.auth, input)),
   refreshFromList: authProcedure

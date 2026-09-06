@@ -20,6 +20,7 @@ import type {
   CompanionYardSign,
   CoverageRequestType,
   CutTurfsType,
+  EnsureUniverseListType,
   FieldReportRangeType,
   IAuthKeyPayload,
   MapViewportType,
@@ -34,6 +35,7 @@ import type {
 import {
   COVERAGE_MAX_DOORS,
   CompanionOpResultObj,
+  DEFAULT_NOT_RECENT_DAYS,
   DEFAULT_TIMEZONE,
   KNOCK_TAPE_SLOT_MS,
   RECENT_KNOCK_WINDOW_DAYS,
@@ -46,7 +48,12 @@ import {
   isValidTimeZone,
   knockTape,
   nearestPoint,
+  universeListDescription,
+  universeListName,
+  universeListRules,
 } from '../../../../../../libs/common/src';
+
+import { TRPCError } from '@trpc/server';
 
 import { env } from '../../../env';
 import { assertVolunteerLinkResendAllowed } from '../../lib/volunteer-link-resend-limit';
@@ -1245,11 +1252,67 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
   // ---------------------------------------------------------- cut turfs -----
 
+  /**
+   * The smart list behind a named universe preset ("All supporters", "Never
+   * canvassed", "Not canvassed in X days") — created on first use, reused by
+   * exact name after that, so cutting from a preset twice never mints
+   * "All supporters (2)". The created list is an ordinary dynamic people list:
+   * it shows on the Lists page, opens in the rule builder, and stays editable.
+   *
+   * Reuse is by name alone, deliberately: if the workspace already has a list
+   * called "All supporters" — even a hand-made one with different rules — that
+   * list IS what those words mean here, and silently shadowing it with a
+   * second list of the same name would be worse. The response says which
+   * happened so the wizard can tell the user.
+   */
+  public async ensureUniverseList(
+    auth: IAuthKeyPayload,
+    input: EnsureUniverseListType,
+  ): Promise<{ list_id: string; name: string; reused: boolean }> {
+    const days = input.days ?? DEFAULT_NOT_RECENT_DAYS;
+    const name = universeListName(input.preset, days);
+
+    const findByName = async (): Promise<string | null> => {
+      const row = await this.getRepo()
+        .db.selectFrom('lists')
+        .select('id')
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('name', '=', name)
+        .executeTakeFirst();
+      return row ? String(row.id) : null;
+    };
+
+    const existing = await findByName();
+    if (existing) return { list_id: existing, name, reused: true };
+
+    try {
+      const created = await this.lists.addList(
+        {
+          name,
+          description: universeListDescription(input.preset, days),
+          object: 'people',
+          is_dynamic: true,
+          definition: { advancedFilterModel: universeListRules(input.preset, days), tags: [] },
+        },
+        auth,
+      );
+      return { list_id: String(created.id), name, reused: false };
+    } catch (err) {
+      // Two staff opening the wizard at once: the loser of the unique-name race
+      // reuses the winner's list, same as the friendly path above.
+      if (err instanceof TRPCError && err.code === 'CONFLICT') {
+        const raced = await findByName();
+        if (raced) return { list_id: raced, name, reused: true };
+      }
+      throw err;
+    }
+  }
+
   public async previewCut(auth: IAuthKeyPayload, input: CutTurfsType): Promise<CutPreviewResult> {
     // The preview must be cut against the same map the real cut will use, or it can promise a
     // turf count the cut then contradicts.
     const boundary = await this.turfBoundaryForCut(auth);
-    const doors = await this.resolveUniverseDoors(auth, input.list_id, boundary.set_id);
+    const doors = await this.resolveUniverseDoors(auth, input.list_id ?? null, boundary.set_id);
     return { ...previewCutPlan(doors, input.doors_per_turf), bounded: boundary.set_id != null };
   }
 
@@ -1261,10 +1324,14 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       campaign_id: campaignId,
     });
 
-    const doors = await this.resolveUniverseDoors(auth, input.list_id, boundary.set_id);
+    const doors = await this.resolveUniverseDoors(auth, input.list_id ?? null, boundary.set_id);
     const plan = clusterTurfs(doors, input.doors_per_turf);
     if (plan.turfs.length === 0) {
-      throw new BadRequestError('No geocoded doors in that list yet. Turfs are cut from located households.');
+      throw new BadRequestError(
+        input.list_id != null
+          ? 'No geocoded doors in that list yet. Turfs are cut from located households.'
+          : 'No geocoded households in the workspace yet. Turfs are cut from located households.',
+      );
     }
 
     const repo = this.turfsRepo();
@@ -1282,7 +1349,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           status: 'draft',
           mode: input.mode ?? 'canvass',
           travel: input.travel ?? 'walk',
-          list_id: input.list_id,
+          list_id: input.list_id ?? null,
           target_doors: input.doors_per_turf,
           centroid_lat: cluster.centroid_lat,
           centroid_lng: cluster.centroid_lng,
@@ -1331,10 +1398,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   ): Promise<{ added: number; removed: number; boundary_map_missing: boolean }> {
     const turf = await this.turfsRepo().getTurfCore({ tenant_id: auth.tenant_id, id: turfId });
     if (!turf) throw new NotFoundError('Turf not found');
-    const listId = turf.list_id;
-    if (!listId) throw new BadRequestError('This turf is not linked to a list, so it cannot be refreshed.');
-
-    const members = new Set(await this.resolveUniverseHouseholdIds(auth, listId));
+    // A null list is the "Everyone" universe — refresh re-resolves it the same
+    // way the cut did (every located household), so newly geocoded doors join.
+    const members = new Set(await this.resolveUniverseHouseholdIds(auth, turf.list_id));
     const current = await this.turfHouseholds.getHouseholdIds({ tenant_id: auth.tenant_id, turf_id: turfId });
     const currentSet = new Set(current);
 
@@ -3054,7 +3120,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
   private async resolveUniverseDoors(
     auth: IAuthKeyPayload,
-    listId: string,
+    listId: string | null,
     boundarySetId: string | null,
   ): Promise<DoorPoint[]> {
     const householdIds = await this.resolveUniverseHouseholdIds(auth, listId);
@@ -3065,8 +3131,13 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     });
   }
 
-  /** Reuse Lists' getCurrentMembers (Wave 1C) — never re-derive membership. */
-  private async resolveUniverseHouseholdIds(auth: IAuthKeyPayload, listId: string): Promise<string[]> {
+  /**
+   * Reuse Lists' getCurrentMembers (Wave 1C) — never re-derive membership.
+   * A null list is the "Everyone" universe: every located household in the
+   * workspace, no list row at all.
+   */
+  private async resolveUniverseHouseholdIds(auth: IAuthKeyPayload, listId: string | null): Promise<string[]> {
+    if (listId == null) return this.turfsRepo().getLocatedHouseholdIds(auth.tenant_id);
     const members = await this.lists.getCurrentMembers(auth, listId);
     if (members.object === 'households') return members.ids;
     // A people list → map to their distinct households.

@@ -15,6 +15,7 @@ import type {
   AddTurfObj,
   UpdateTurfObj,
   CutTurfsObj,
+  EnsureUniverseListObj,
   AssignTurfObj,
   RemoveCanvasserObj,
   FieldReportRangeObj,
@@ -189,6 +190,8 @@ export type AddTurfType = z.infer<typeof AddTurfObj>;
 export type UpdateTurfType = z.infer<typeof UpdateTurfObj>;
 
 export type CutTurfsType = z.infer<typeof CutTurfsObj>;
+
+export type EnsureUniverseListType = z.infer<typeof EnsureUniverseListObj>;
 
 export type AssignTurfType = z.infer<typeof AssignTurfObj>;
 

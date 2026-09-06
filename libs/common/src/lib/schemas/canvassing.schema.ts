@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { SupportLevel, VotingStatus } from './campaigns.schema';
+import { LIST_BACKED_UNIVERSE_PRESETS } from '../canvass-universes';
 import { MapViewportObj, idSchema, nameSchema, notesSchema } from './core.schema';
 
 /**
@@ -156,10 +157,22 @@ export const UpdateTurfObj = z.object({
 
 /** Preview and Cut share this input; preview never writes. */
 export const CutTurfsObj = z.object({
-  list_id: idSchema,
+  /** Null/absent = the "Everyone" universe: every located household in the workspace, no list. */
+  list_id: idSchema.nullable().optional(),
   doors_per_turf: z.number().int().min(5).max(500),
   mode: z.enum(TURF_MODES).optional(),
   travel: z.enum(TURF_TRAVEL_MODES).optional(),
+});
+
+/**
+ * Ask the backend for the smart list behind a named universe preset
+ * (canvass-universes.ts). Creates it on first use, returns the existing list —
+ * matched by its exact preset name — on every later one. `days` only matters
+ * for `not_recent` (each X gets its own list, since the name carries the X).
+ */
+export const EnsureUniverseListObj = z.object({
+  preset: z.enum(LIST_BACKED_UNIVERSE_PRESETS),
+  days: z.number().int().min(1).max(365).optional(),
 });
 
 export const AssignTurfObj = z.object({
