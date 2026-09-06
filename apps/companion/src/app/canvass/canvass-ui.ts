@@ -135,6 +135,17 @@ function isSameCanvasser(knockName: string | null, myName: string | null): boole
 export { firstNameOf } from './canvass-derive';
 
 /**
+ * Google Maps directions to one door — the per-stop Navigate the GOTV walk and the drive
+ * route share. Coordinates when the household is located (exact), the printed address
+ * otherwise (Maps can usually still find it; a button that vanishes for an unlocated door
+ * would read as broken).
+ */
+export function navigateUrl(h: { lat: number | null; lng: number | null; address: string }): string {
+  const destination = h.lat != null && h.lng != null ? `${h.lat},${h.lng}` : h.address;
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}`;
+}
+
+/**
  * The scope as a phrase: "James Street", "the odd side of James Street", "this turf".
  * Shared by the walk list and the map so the two never name the same doors differently.
  */

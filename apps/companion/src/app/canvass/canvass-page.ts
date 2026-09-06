@@ -12,6 +12,7 @@ import { CanvassMe } from './canvass-me';
 import { CanvassStore } from './canvass-store';
 import { CanvassSurvey } from './canvass-survey';
 import { CanvassTurfPicker } from './canvass-turf-picker';
+import { GotvHousehold } from './gotv-household';
 
 import type { PcIconNameType } from '@icons/icons.index';
 
@@ -37,6 +38,7 @@ type TabId = 'list' | 'map' | 'me';
     CanvassMe,
     CanvassSurvey,
     CanvassTurfPicker,
+    GotvHousehold,
     Icon,
   ],
   template: `
@@ -121,7 +123,13 @@ type TabId = 'list' | 'map' | 'me';
               <pc-canvass-building></pc-canvass-building>
             }
             @case ('household') {
-              <pc-canvass-household></pc-canvass-household>
+              <!-- The door screen follows the turf's mode: a GOTV outing gets the
+                   two-tap reminder screen, everything else the full canvass door. -->
+              @if (store.mode() === 'gotv') {
+                <pc-gotv-household></pc-gotv-household>
+              } @else {
+                <pc-canvass-household></pc-canvass-household>
+              }
             }
             @case ('survey') {
               <pc-canvass-survey></pc-canvass-survey>

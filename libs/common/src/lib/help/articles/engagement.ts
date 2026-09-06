@@ -477,6 +477,15 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         kind: 'p',
         text: 'Which line that is depends on the maps your workspace holds for this campaign. Cutting uses the finest voting subdivision available — a precinct, a polling division, a poll — and falls back to the seat area (the ward, riding or congressional district) when there is no subdivision map. With no boundary map at all, doors are grouped purely by which ones sit near each other, and those turfs are labelled as unbounded so nobody mistakes the grouping for a real line. Getting a map in is quick and free: see [Boundary maps](/help/district-boundaries), or [draw one yourself](/help/drawing-boundaries) if your municipality publishes nothing usable.',
       },
+      { kind: 'h2', id: 'gotv', text: 'GOTV outings: remind supporters to vote' },
+      {
+        kind: 'p',
+        text: 'A turf cut in **GOTV** mode changes what the volunteer’s phone shows, not how anything is stored. Each door’s row carries one-tap buttons — **Reminded**, **Already voted**, **Nobody home** — plus a Navigate button, because a GOTV walk skips most doors and the next one is rarely next door. Opening a door shows one card per person with the same two taps; "Already voted" records the person’s voting status, so the green already-voted check appears everywhere the person does. A door that turns into a real conversation is one tap from the full survey. GOTV turfs wear a badge on the [Canvassing](/canvassing) list so you can tell the outings apart.',
+      },
+      {
+        kind: 'p',
+        text: 'Persuasion turfs get row-level quick taps too — **Supporter**, **Non-supporter**, **Not home** — so the common outcomes are recorded without opening the door screen. The buttons disappear once a door is attempted. Every row shows who lives there, the address, and who last visited ("Julie L. spoke to someone here 1 day ago"), so nobody re-knocks a door a teammate finished an hour ago.',
+      },
       { kind: 'h2', id: 'statuses', text: 'What the badge on a turf means' },
       {
         kind: 'list',
@@ -531,7 +540,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         kind: 'callout',
         tone: 'info',
         title: 'Greyed out? The turf has no list behind it',
-        text: 'Only a turf that was cut from a list can be re-read from one, because that is where the doors came from. A turf built by hand has nothing to compare against, so the action is offered but disabled and says why.',
+        text: 'Only a cut turf can be re-read from its universe, because that is where the doors came from. A turf cut from **Everyone** re-reads the whole workspace the same way. A turf built by hand has nothing to compare against, so the action is offered but disabled and says why.',
       },
       { kind: 'h2', id: 'print-walk-map', text: 'Print a paper walk map' },
       {

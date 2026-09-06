@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signal } from '@angular/core';
 
 import type { CompanionHousehold } from '@common';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Icon } from '@icons/icon';
 
 import type { SideFilter, WalkEntry } from './canvass-derive';
@@ -17,7 +18,7 @@ import {
 } from './canvass-derive';
 import { CanvassSegmentPicker } from './canvass-segment-picker';
 import { CanvassStore } from './canvass-store';
-import { scopeLabel, statusBadgeClass, stanceStyle, type StanceStyle } from './canvass-ui';
+import { lastVisitLabel, navigateUrl, scopeLabel, statusBadgeClass, stanceStyle, type StanceStyle } from './canvass-ui';
 
 /**
  * How often the turf re-pulls itself while the walk list is open.
@@ -29,6 +30,9 @@ import { scopeLabel, statusBadgeClass, stanceStyle, type StanceStyle } from './c
 const REFRESH_MS = 60_000;
 
 type ListFilter = 'all' | 'remaining' | 'visited';
+
+/** The one-tap outcomes a walk-list row offers; which three depends on the turf's mode. */
+type QuickActionId = 'supporter' | 'non_supporter' | 'reminded' | 'already_voted' | 'not_home';
 
 /**
  * The walk list (spec §3.3): the street you are on, its progress, then its doors in walk
@@ -140,15 +144,14 @@ type ListFilter = 'all' | 'remaining' | 'visited';
 
       <div class="flex flex-col gap-2">
         @for (entry of filtered(); track entry.key) {
-          <button
-            type="button"
-            class="flex w-full items-center gap-3 rounded-lg border border-l-4 border-base-300 bg-base-100 p-3 text-left"
-            [class]="accentClass(entry)"
-            [class.ring-2]="entry.key === store.nextEntryKey()"
-            [class.ring-primary]="entry.key === store.nextEntryKey()"
-            (click)="open(entry)"
-          >
-            @if (entry.kind === 'building') {
+          @if (entry.kind === 'building') {
+            <button
+              type="button"
+              class="flex w-full items-center gap-3 rounded-lg border border-l-4 border-l-base-300 border-base-300 bg-base-100 p-3 text-left"
+              [class.ring-2]="entry.key === store.nextEntryKey()"
+              [class.ring-primary]="entry.key === store.nextEntryKey()"
+              (click)="open(entry)"
+            >
               <span
                 class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-base-300 text-base-content"
               >
@@ -167,54 +170,101 @@ type ListFilter = 'all' | 'remaining' | 'visited';
                 </span>
               }
               <pc-icon name="chevron-right" [size]="5" class="shrink-0 text-base-content/40" />
-            } @else {
-              <span
-                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-semibold"
-                [class.bg-primary]="entry.key === store.nextEntryKey()"
-                [class.text-primary-content]="entry.key === store.nextEntryKey()"
-                [class.border-primary]="entry.key === store.nextEntryKey()"
-                [class.border-base-300]="entry.key !== store.nextEntryKey()"
-                [class.text-base-content]="entry.key !== store.nextEntryKey()"
-              >
-                {{ store.walkSeqByKey().get(entry.key) }}
-              </span>
-              <span class="min-w-0 flex-1">
-                <span class="block truncate font-medium">{{ entry.household.address }}</span>
-                @if (residents(entry.household); as names) {
-                  <span class="block truncate text-xs text-base-content/70">{{ names }}</span>
-                }
-              </span>
-              <span class="flex shrink-0 items-center gap-1.5">
-                <!-- Marks before the status chip: they change what you ASK at the door,
-                     which matters before you know whether anyone answered it. -->
-                <!-- How many people to expect. The names line truncates on a phone-width
-                     row, so past two residents the count is otherwise invisible. One icon
-                     plus a number, never a row of figures: five glyphs would crowd out the
-                     marks that change the ask. -->
-                @if (peopleCount(entry.household); as n) {
-                  <span
-                    class="flex items-center gap-1 text-xs tabular-nums text-base-content/60"
-                    [title]="peopleTitle(n)"
-                  >
-                    <pc-icon name="user-group" [size]="4" />{{ n }}
-                  </span>
-                }
-                <!-- Only an OWED sign is a mark on the row. A door whose sign is already
-                     delivered has nothing left for the walker to do about it, and a mark
-                     there would send them looking for a job that is finished. -->
-                @if (entry.household.yard_sign?.status === 'requested') {
-                  <pc-icon name="yard-sign" [size]="4" class="text-info" title="Owed a yard sign" />
-                }
-                @if (voted(entry.household)) {
-                  <pc-icon name="check-circle" [size]="4" class="text-success" title="Already voted" />
-                }
-                @if (stance(entry.household); as s) {
-                  <pc-icon [name]="s.icon" [size]="4" [class]="s.tone" [title]="s.label" />
-                }
-                <span [class]="chipClass(entry.household)">{{ chipLabel(entry.household) }}</span>
-              </span>
-            }
-          </button>
+            </button>
+          } @else {
+            <!-- One door: the tappable row, then (until the door is attempted) its quick
+                 actions. Two siblings rather than nested buttons — a button inside a
+                 button is invalid HTML and taps would fall through to the row. -->
+            <div
+              class="rounded-lg border border-l-4 border-base-300 bg-base-100"
+              [class]="accentClass(entry)"
+              [class.ring-2]="entry.key === store.nextEntryKey()"
+              [class.ring-primary]="entry.key === store.nextEntryKey()"
+            >
+              <button type="button" class="flex w-full items-center gap-3 p-3 text-left" (click)="open(entry)">
+                <span
+                  class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-semibold"
+                  [class.bg-primary]="entry.key === store.nextEntryKey()"
+                  [class.text-primary-content]="entry.key === store.nextEntryKey()"
+                  [class.border-primary]="entry.key === store.nextEntryKey()"
+                  [class.border-base-300]="entry.key !== store.nextEntryKey()"
+                  [class.text-base-content]="entry.key !== store.nextEntryKey()"
+                >
+                  {{ store.walkSeqByKey().get(entry.key) }}
+                </span>
+                <span class="min-w-0 flex-1">
+                  <!-- Three lines: who lives here, where it is, who came before. The names
+                       lead when there are any — they are what decides the ask — with the
+                       address underneath; a door with no one on file leads with the address. -->
+                  @if (residents(entry.household); as names) {
+                    <span class="block truncate font-medium">{{ names }}</span>
+                    <span class="block truncate text-xs text-base-content/70">{{ entry.household.address }}</span>
+                  } @else {
+                    <span class="block truncate font-medium">{{ entry.household.address }}</span>
+                  }
+                  @if (lastVisit(entry.household); as note) {
+                    <span class="block truncate text-xs text-base-content/50">{{ note }}</span>
+                  }
+                </span>
+                <span class="flex shrink-0 items-center gap-1.5">
+                  <!-- Marks before the status chip: they change what you ASK at the door,
+                       which matters before you know whether anyone answered it. -->
+                  <!-- How many people to expect. The names line truncates on a phone-width
+                       row, so past two residents the count is otherwise invisible. One icon
+                       plus a number, never a row of figures: five glyphs would crowd out the
+                       marks that change the ask. -->
+                  @if (peopleCount(entry.household); as n) {
+                    <span
+                      class="flex items-center gap-1 text-xs tabular-nums text-base-content/60"
+                      [title]="peopleTitle(n)"
+                    >
+                      <pc-icon name="user-group" [size]="4" />{{ n }}
+                    </span>
+                  }
+                  <!-- Only an OWED sign is a mark on the row. A door whose sign is already
+                       delivered has nothing left for the walker to do about it, and a mark
+                       there would send them looking for a job that is finished. -->
+                  @if (entry.household.yard_sign?.status === 'requested') {
+                    <pc-icon name="yard-sign" [size]="4" class="text-info" title="Owed a yard sign" />
+                  }
+                  @if (voted(entry.household)) {
+                    <pc-icon name="check-circle" [size]="4" class="text-success" title="Already voted" />
+                  }
+                  @if (stance(entry.household); as s) {
+                    <pc-icon [name]="s.icon" [size]="4" [class]="s.tone" [title]="s.label" />
+                  }
+                  <span [class]="chipClass(entry.household)">{{ chipLabel(entry.household) }}</span>
+                </span>
+              </button>
+              <!-- The common outcomes, right on the row (operator rule 2026-09-05): most
+                   doors end in one tap, and the detail screen is for the uncommon work.
+                   Gone once the door is attempted — the job the buttons do is done. -->
+              @if (showQuickActions(entry.household)) {
+                <div class="flex items-center gap-2 border-t border-base-200 p-2">
+                  @for (action of quickActions(); track action.id) {
+                    <button
+                      type="button"
+                      class="btn btn-outline btn-secondary btn-xs min-h-9 flex-1"
+                      (click)="quickAct(entry.household, action.id)"
+                    >
+                      {{ action.label }}
+                    </button>
+                  }
+                  @if (store.mode() === 'gotv') {
+                    <button
+                      type="button"
+                      class="btn btn-outline btn-secondary btn-xs min-h-9"
+                      [attr.aria-label]="'Navigate to ' + entry.household.address"
+                      title="Navigate to this door"
+                      (click)="navigate(entry.household)"
+                    >
+                      <pc-icon name="map-pin" [size]="4" />
+                    </button>
+                  }
+                </div>
+              }
+            </div>
+          }
         } @empty {
           <div class="flex flex-col items-center gap-2 rounded-lg border border-base-300 bg-base-100 p-6 text-center">
             <p class="text-base-content/70">{{ emptyMessage() }}</p>
@@ -235,6 +285,7 @@ type ListFilter = 'all' | 'remaining' | 'visited';
 })
 export class CanvassList {
   protected readonly store = inject(CanvassStore);
+  private readonly alerts = inject(AlertService);
 
   protected readonly pickerOpen = signal(false);
   protected readonly filter = signal<ListFilter>('all');
@@ -277,6 +328,88 @@ export class CanvassList {
   constructor() {
     const timer = setInterval(() => void this.store.refresh(), REFRESH_MS);
     inject(DestroyRef).onDestroy(() => clearInterval(timer));
+  }
+
+  /**
+   * The row's one-tap outcomes, by mode. A persuasion walk records a stance or a miss; a
+   * GOTV walk records the reminder, the ballot already cast, or the miss. The words are
+   * the ask, not the storage: "Reminded" is stored as the ordinary supporter survey and
+   * "Already voted" as the already_voted one — no new vocabulary anywhere downstream.
+   */
+  protected readonly quickActions = computed<{ id: QuickActionId; label: string }[]>(() =>
+    this.store.mode() === 'gotv'
+      ? [
+          { id: 'reminded', label: 'Reminded' },
+          { id: 'already_voted', label: 'Already voted' },
+          { id: 'not_home', label: 'Nobody home' },
+        ]
+      : [
+          { id: 'supporter', label: 'Supporter' },
+          { id: 'non_supporter', label: 'Non-supporter' },
+          { id: 'not_home', label: 'Not home' },
+        ],
+  );
+
+  /** Quick actions live on doors still owed a visit; a DNC door records nothing at all. */
+  protected showQuickActions(h: CompanionHousehold): boolean {
+    return !h.dnc && !isAttempted(h);
+  }
+
+  protected quickAct(h: CompanionHousehold, action: QuickActionId): void {
+    switch (action) {
+      case 'not_home':
+        this.store.doorOutcome(h.id, 'no_answer');
+        this.alerts.showSuccess('Marked "Nobody home"');
+        return;
+      case 'supporter':
+        this.store.quickSurvey(h.id, this.quickTargetId(h), 'supporter');
+        this.alerts.showSuccess('Marked supporter');
+        return;
+      case 'non_supporter':
+        this.store.quickSurvey(h.id, this.quickTargetId(h), 'non_supporter');
+        this.alerts.showSuccess('Marked non-supporter');
+        return;
+      case 'reminded':
+        this.store.quickSurvey(h.id, this.quickTargetId(h), 'supporter');
+        this.alerts.showSuccess('Reminded to vote');
+        return;
+      case 'already_voted': {
+        // "Already voted" is a fact about one person's ballot. With several residents the
+        // row cannot know whose, so the door opens for the volunteer to say who — an
+        // anonymous version would record a conversation but lose the turnout fact.
+        const target = this.quickTargetId(h);
+        if (target == null && livingResidents(h).length > 0) {
+          this.store.view.set({ kind: 'household', household_id: h.id });
+          return;
+        }
+        this.store.quickSurvey(h.id, target, 'already_voted');
+        this.alerts.showSuccess('Marked "Already voted"');
+        return;
+      }
+      default: {
+        const _exhaustive: never = action;
+        void _exhaustive;
+      }
+    }
+  }
+
+  /** The one living, contactable resident this row speaks for — or null (record door-level). */
+  private quickTargetId(h: CompanionHousehold): string | null {
+    const candidates = livingResidents(h).filter((p) => !p.dnc);
+    const only = candidates.length === 1 ? candidates[0] : undefined;
+    return only?.id ?? null;
+  }
+
+  protected navigate(h: CompanionHousehold): void {
+    window.open(navigateUrl(h), '_blank', 'noopener');
+  }
+
+  /** "Julie L. spoke to someone here 1 day ago" — the row's third line, when someone has. */
+  protected lastVisit(h: CompanionHousehold): string | null {
+    return lastVisitLabel(h.last_knock, {
+      myName: this.store.payload()?.canvasser_name ?? null,
+      now: Date.now(),
+    });
   }
 
   /**

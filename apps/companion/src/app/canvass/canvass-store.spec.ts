@@ -1169,4 +1169,68 @@ describe('CanvassStore', () => {
       expect(store.mapMode()).toBe('walk');
     });
   });
+
+  describe('turf mode and one-tap quick surveys', () => {
+    /** Serve a specific payload instead of the default one, still acking every POST. */
+    function servePayload(payload: CompanionTurfPayload): void {
+      fetchMock.mockImplementation((url, init) => {
+        if (!init || init.method !== 'POST') return Promise.resolve(jsonResponse(payload));
+        const body = JSON.parse(String(init.body)) as { ops: { op_id: string }[] };
+        return Promise.resolve(jsonResponse(acksFor(body.ops)));
+      });
+    }
+
+    it('a payload from before turfs had modes reads as a plain canvass', async () => {
+      await store.load(TOKEN);
+      expect(store.mode()).toBe('canvass');
+    });
+
+    it('a GOTV payload reads as gotv', async () => {
+      servePayload({ ...turfPayload(), mode: 'gotv' });
+      await store.load(TOKEN);
+      expect(store.mode()).toBe('gotv');
+    });
+
+    it('quickSurvey posts one released survey op carrying only the stance', async () => {
+      await store.load(TOKEN);
+      store.quickSurvey('10', '1', 'already_voted');
+      await flushMicrotasks();
+
+      const ops = postedOps(fetchMock, 0);
+      expect(ops).toHaveLength(1);
+      expect(ops[0]?.type).toBe('survey');
+      expect(ops[0]?.payload).toMatchObject({
+        household_id: '10',
+        person_id: '1',
+        support: 'already_voted',
+        issues: [],
+        wants_volunteer: false,
+        wants_yard_sign: false,
+        set_dnc: false,
+      });
+    });
+
+    it('quickSurvey with no person records the household-level survey', async () => {
+      await store.load(TOKEN);
+      store.quickSurvey('11', null, 'supporter');
+      await flushMicrotasks();
+
+      const ops = postedOps(fetchMock, 0);
+      expect(ops[0]?.payload).toMatchObject({ household_id: '11', person_id: null, support: 'supporter' });
+    });
+
+    it('quickSurvey pre-fills senior from the person instead of quietly un-ticking it', async () => {
+      const payload = turfPayload();
+      const alice = payload.households[0]?.people[0];
+      if (!alice) throw new Error('expected the seeded resident');
+      alice.senior = true;
+      servePayload(payload);
+      await store.load(TOKEN);
+
+      store.quickSurvey('10', '1', 'supporter');
+      await flushMicrotasks();
+
+      expect(postedOps(fetchMock, 0)[0]?.payload).toMatchObject({ person_id: '1', senior: true });
+    });
+  });
 });

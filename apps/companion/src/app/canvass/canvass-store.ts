@@ -10,6 +10,7 @@ import type {
   CompanionTurfChoices,
   CompanionTurfPayload,
   KnockResponse,
+  TurfMode,
 } from '@common';
 import { COMPANION_OPS_MAX_PER_BATCH, CompanionOpObj, LOCATION_PING_INTERVAL_MS } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -369,6 +370,11 @@ export class CanvassStore {
   public readonly walkSeqByKey = computed<Map<string, number>>(
     () => new Map(this.walkEntries().map((entry, i) => [entry.key, i + 1])),
   );
+  /**
+   * What this outing is for — decides the door screen, the quick actions, and the words.
+   * A payload from before turfs had modes carries none and reads as a plain canvass.
+   */
+  public readonly mode = computed<TurfMode>(() => this.payload()?.mode ?? 'canvass');
   /** Turf-wide stats — these include every canvasser's work, not just this device's. */
   public readonly stats = computed(() => meStats(this.households()));
   /** Doors this volunteer logged on this device this shift. */
@@ -745,6 +751,35 @@ export class CanvassStore {
     if (this.lastAction()?.op_id === opId) this.lastAction.set(null);
     this.persistQueue();
     return true;
+  }
+
+  /**
+   * One-tap stance from a list row or the GOTV door screen: one knock row carrying only
+   * the stance, recorded against a person (pass their id) or the household (pass null).
+   * Goes through the survey-draft machinery so queueing, replay and undo behave exactly
+   * as a full survey does — this IS a survey, just a one-word one.
+   *
+   * `senior` is pre-filled from the person's record, never blanket-false: the server
+   * treats a false as "un-tick", and a quick tap must not quietly clear a fact somebody
+   * recorded at an earlier door (same rule the survey screen follows).
+   */
+  public quickSurvey(householdId: string, personId: string | null, support: KnockResponse): void {
+    const person =
+      personId == null ? null : (this.householdById(householdId)?.people.find((p) => p.id === personId) ?? null);
+    const draft: SurveyDraft = {
+      support,
+      issues: [],
+      wants_volunteer: false,
+      wants_yard_sign: false,
+      yard_sign_delivered: false,
+      set_dnc: false,
+      senior: person?.senior ?? false,
+      contact_phone: null,
+      contact_email: null,
+      subscribe: false,
+      notes: null,
+    };
+    this.commitSurveyDraft(this.saveSurveyDraft(householdId, personId, draft));
   }
 
   /**
