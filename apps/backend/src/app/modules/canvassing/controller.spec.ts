@@ -2273,6 +2273,22 @@ describe('CanvassingController', () => {
       expect(preview.unplaced).toBe(0);
     });
 
+    it('a drive cut stores a complete driving sequence: every door numbered exactly once', async () => {
+      // The sequence's quality (nearest-first chain, 2-opt refinement, determinism) is
+      // the orderStops unit spec's job — here the claim is that the drive path wires it
+      // in without losing or double-numbering a door.
+      await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 20, mode: 'gotv', travel: 'drive' });
+      const turfs = await controller.getTurfs(auth);
+      expect(turfs.length).toBeGreaterThan(0);
+
+      for (const t of turfs) {
+        expect(t.travel).toBe('drive');
+        const detail = await controller.getTurfDetail(auth, t.id);
+        const orders = detail.doors.map((d) => d.walk_order).sort((a, b) => a - b);
+        expect(orders).toEqual(detail.doors.map((_, i) => i + 1));
+      }
+    });
+
     it('cutTurfs with no list stores list_id NULL, and refreshFromList still works on those turfs', async () => {
       const res = await controller.cutTurfs(auth, { list_id: null, doors_per_turf: 20 });
       expect(res.created).toBeGreaterThanOrEqual(2);

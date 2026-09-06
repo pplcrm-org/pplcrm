@@ -139,6 +139,39 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
+export interface OrderableStop extends LatLng {
+  id: string;
+}
+
+/**
+ * Order ONE set of stops into a single drive sequence — the whole-turf sibling of
+ * `planRoutes`. No time budget and no partitioning: which doors are in the turf was
+ * decided at cut time, so every stop stays in and only the visit order is chosen here.
+ * Greedy nearest-neighbour from the start, refined by the same bounded 2-opt pass, and
+ * deterministic (id breaks every tie). Used to write `turf_households.walk_order` for
+ * travel='drive' turfs, where the boustrophedon street sweep would order doors for a
+ * walker, not a driver.
+ */
+export function orderStops(start: LatLng, stops: OrderableStop[]): string[] {
+  const pool: PlanStopInput[] = stops.map((s) => ({ requestId: s.id, lat: s.lat, lng: s.lng }));
+  // Only `includeReturnLeg` matters to the passes used here; the time fields feed the
+  // budget logic this function deliberately has none of.
+  const params: PlanParams = { serviceMinutes: 0, avgSpeedKmh: 30, includeReturnLeg: false };
+  const chain: PlanStopInput[] = [];
+  const remaining = pool.slice();
+  let cursor: LatLng = start;
+  while (remaining.length > 0) {
+    const idx = nearest(cursor, remaining);
+    if (idx < 0) break;
+    const next = remaining[idx];
+    if (!next) break;
+    chain.push(next);
+    remaining.splice(idx, 1);
+    cursor = next;
+  }
+  return twoOptImprove(start, chain, params).map((s) => s.requestId);
+}
+
 /**
  * Group geocoded stops into ~1-hour routes (spec §14). Pure — no DB, no I/O. Greedy
  * nearest-neighbour fill under the time budget, refined with a bounded 2-opt pass. Deterministic:

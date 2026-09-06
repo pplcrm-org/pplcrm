@@ -65,6 +65,7 @@ import { chunk } from '../../lib/chunk';
 import { notifyVolunteerOfLink, type VolunteerLinkSendResult } from '../../lib/mail/volunteer-link-notify';
 import { publicMessageOf } from '../../lib/public-route-errors';
 import { publicOrgName } from '../../lib/public-tenant';
+import { orderStops, type OrderableStop } from '../../lib/routing/plan-routes';
 import { turfAssignmentExpiry } from '../../lib/volunteer-link-policy';
 import { CampaignPersonFactsRepo } from '../campaigns/repositories/campaign-person-facts.repo';
 import { CampaignSubscriptionsRepo } from '../campaigns/repositories/campaign-subscriptions.repo';
@@ -1362,6 +1363,11 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     const existing = await repo.getTurfs(auth.tenant_id);
     let n = existing.length;
 
+    const travel = input.travel ?? 'walk';
+    // Drive turfs store a driving sequence, so the ordering below needs each door's
+    // position. Walk turfs keep the engine's street sweep untouched.
+    const geoById = new Map(doors.map((d) => [d.household_id, { lat: d.lat, lng: d.lng }]));
+
     await repo.transaction().execute(async (trx) => {
       for (const cluster of plan.turfs) {
         n += 1;
@@ -1371,7 +1377,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           name: `Turf ${n}`,
           status: 'draft',
           mode: input.mode ?? 'canvass',
-          travel: input.travel ?? 'walk',
+          travel,
           list_id: input.list_id ?? null,
           target_doors: input.doors_per_turf,
           centroid_lat: cluster.centroid_lat,
@@ -1395,14 +1401,40 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         const created = await repo.add({ row }, trx);
         const turfId = created?.id != null ? String(created.id) : '';
         if (!turfId) throw new NotFoundError('Failed to create turf');
+        // addDoors stores walk_order from the order it is handed: the walker's street
+        // sweep as the engine produced it, or a driving sequence for a drive turf.
+        const householdIds = travel === 'drive' ? this.orderClusterForDrive(cluster, geoById) : cluster.households;
         await this.turfHouseholds.addDoors(
-          { tenant_id: auth.tenant_id, turf_id: turfId, household_ids: cluster.households, user_id: auth.user_id },
+          { tenant_id: auth.tenant_id, turf_id: turfId, household_ids: householdIds, user_id: auth.user_id },
           trx,
         );
       }
     });
 
     return { created: plan.turfs.length, unplaced: plan.unplaced.length };
+  }
+
+  /**
+   * A drive turf's visit order: nearest-neighbour chain from the cluster's centroid,
+   * 2-opt-refined (`orderStops`). The walker's boustrophedon sweep orders doors up one
+   * side of a street and back down the other — exactly wrong for a car. Doors with no
+   * position keep their engine order at the end; a cluster with no centroid (nothing
+   * located) is left as the engine ordered it.
+   */
+  private orderClusterForDrive(
+    cluster: { centroid_lat: number | null; centroid_lng: number | null; households: string[] },
+    geoById: Map<string, { lat: number | null; lng: number | null }>,
+  ): string[] {
+    if (cluster.centroid_lat == null || cluster.centroid_lng == null) return cluster.households;
+    const start = { lat: cluster.centroid_lat, lng: cluster.centroid_lng };
+    const located: OrderableStop[] = [];
+    const unlocated: string[] = [];
+    for (const id of cluster.households) {
+      const geo = geoById.get(id);
+      if (geo?.lat != null && geo.lng != null) located.push({ id, lat: geo.lat, lng: geo.lng });
+      else unlocated.push(id);
+    }
+    return [...orderStops(start, located), ...unlocated];
   }
 
   /**

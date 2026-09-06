@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { haversineKm, roadKm, type LatLng } from './geo';
-import { type PlanParams, type PlanStopInput, planRoutes } from './plan-routes';
+import { type PlanParams, type PlanStopInput, orderStops, planRoutes } from './plan-routes';
 
 const DEFAULT_PARAMS: PlanParams = {
   serviceMinutes: 5,
@@ -160,5 +160,42 @@ describe('planRoutes', () => {
     const elapsed = Date.now() - t0;
     expect(elapsed).toBeLessThan(2000);
     expect(allRequestIds(result).sort((a, b) => Number(a) - Number(b))).toEqual(stops.map((s) => s.requestId));
+  });
+});
+
+describe('orderStops', () => {
+  const start: LatLng = { lat: 45.0, lng: -75.0 };
+
+  it('chains every stop nearest-first from the start, keeping them all', () => {
+    // Four stops on a line east of the start, given shuffled.
+    const stops = [
+      { id: 'c', lat: 45.0, lng: -74.97 },
+      { id: 'a', lat: 45.0, lng: -74.99 },
+      { id: 'd', lat: 45.0, lng: -74.96 },
+      { id: 'b', lat: 45.0, lng: -74.98 },
+    ];
+    expect(orderStops(start, stops)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('is deterministic: identical input yields the identical sequence, id breaking ties', () => {
+    const twin = [
+      { id: '2', lat: 45.0, lng: -74.99 },
+      { id: '1', lat: 45.0, lng: -74.99 },
+    ];
+    expect(orderStops(start, twin)).toEqual(['1', '2']);
+    expect(orderStops(start, twin)).toEqual(orderStops(start, twin.slice().reverse()));
+  });
+
+  it('handles the empty and single-stop cases', () => {
+    expect(orderStops(start, [])).toEqual([]);
+    expect(orderStops(start, [{ id: 'only', lat: 45.1, lng: -75.1 }])).toEqual(['only']);
+  });
+
+  it('never drops a stop, however far away — turf membership was decided at cut time', () => {
+    const stops = [
+      { id: 'near', lat: 45.0, lng: -74.99 },
+      { id: 'far', lat: 47.0, lng: -70.0 },
+    ];
+    expect(orderStops(start, stops)).toEqual(['near', 'far']);
   });
 });
