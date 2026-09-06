@@ -1542,6 +1542,9 @@ describe('CanvassingController', () => {
     expect(report.supportIds).toBe(1);
     expect(report.contactRatePct).toBe(50);
     expect(report.topCanvassers[0]?.name).toBe('Sam Volunteer');
+    // Both knocks landed on a canvass-mode turf, so the by-mode split holds one bucket
+    // whose numbers agree with the totals.
+    expect(report.byMode).toEqual([{ mode: 'canvass', doors: 2, conversations: 1, supporter: 1, already_voted: 0 }]);
   });
 
   it('maps coverage: a door per geocoded household, coloured by its knock status, with turf hulls and a by-boundary roll-up', async () => {

@@ -41,6 +41,7 @@ import {
   RECENT_KNOCK_WINDOW_DAYS,
   SUPPORT_LEVELS,
   TASK_OPEN_STATUSES,
+  TURF_MODE_LABELS,
   VOTING_STATUSES,
   decimatePath,
   isKnockResponse,
@@ -1255,6 +1256,16 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     lines.push(['Totals', 'all', report.doors, report.conversations, report.supportIds].map(esc).join(','));
     for (const t of report.byTeam) {
       lines.push(['By team', t.team_name, t.doors, t.conversations, t.supportIds].map(esc).join(','));
+    }
+    // Only worth a section when more than one kind of outing happened — a single-mode
+    // export would just repeat the Totals row under another name.
+    if (report.byMode.length > 1) {
+      for (const m of report.byMode) {
+        lines.push(['By mode', TURF_MODE_LABELS[m.mode], m.doors, m.conversations, m.supporter].map(esc).join(','));
+        if (m.mode === 'gotv') {
+          lines.push(['By mode', 'GOTV — already voted', m.already_voted, '', ''].map(esc).join(','));
+        }
+      }
     }
     for (const d of report.perDay) {
       lines.push(['By day', d.day, d.conversations + d.no_answer, d.conversations, ''].map(esc).join(','));

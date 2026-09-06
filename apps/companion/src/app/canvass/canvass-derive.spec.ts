@@ -242,6 +242,20 @@ describe('meStats', () => {
     expect(stats.contact_rate).toBe(33); // 1 conversation door of 3 attempted
   });
 
+  it('counts already-voted surveys separately — the GOTV Me tab reads them', () => {
+    const doors = [
+      household({ id: 'a', people: [person({ id: '1', result: 'canvassed', survey: prefill() })] }),
+      household({
+        id: 'b',
+        people: [person({ id: '2', result: 'canvassed', survey: prefill({ support: 'already_voted' }) })],
+      }),
+      household({ id: 'c', hh_survey: prefill({ support: 'already_voted' }) }),
+    ];
+    const stats = meStats(doors);
+    expect(stats.supporters).toBe(1);
+    expect(stats.already_voted).toBe(2);
+  });
+
   it('keeps the contact rate at zero with nothing attempted', () => {
     expect(meStats([household()]).contact_rate).toBe(0);
   });

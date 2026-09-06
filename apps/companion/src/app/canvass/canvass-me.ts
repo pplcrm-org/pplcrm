@@ -45,22 +45,12 @@ const CLOCK_TICK_MS = 30_000;
       </p>
 
       <div class="grid grid-cols-2 gap-2">
-        <div class="rounded-lg border border-base-300 bg-base-100 p-3">
-          <p class="text-xs text-base-content/60">Doors attempted</p>
-          <p class="text-lg font-bold tabular-nums">{{ stats().doors_attempted }} of {{ stats().doors_total }}</p>
-        </div>
-        <div class="rounded-lg border border-base-300 bg-base-100 p-3">
-          <p class="text-xs text-base-content/60">Conversations</p>
-          <p class="text-lg font-bold tabular-nums">{{ stats().conversations }}</p>
-        </div>
-        <div class="rounded-lg border border-base-300 bg-base-100 p-3">
-          <p class="text-xs text-base-content/60">Supporters ID'd</p>
-          <p class="text-lg font-bold tabular-nums">{{ stats().supporters }}</p>
-        </div>
-        <div class="rounded-lg border border-base-300 bg-base-100 p-3">
-          <p class="text-xs text-base-content/60">Contact rate</p>
-          <p class="text-lg font-bold tabular-nums">{{ stats().contact_rate }}%</p>
-        </div>
+        @for (card of statCards(); track card.label) {
+          <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+            <p class="text-xs text-base-content/60">{{ card.label }}</p>
+            <p class="text-lg font-bold tabular-nums">{{ card.value }}</p>
+          </div>
+        }
       </div>
 
       <div class="rounded-lg border border-base-300 bg-base-100 p-4">
@@ -159,6 +149,30 @@ export class CanvassMe {
 
   protected readonly stats = computed(() => this.store.stats());
   protected readonly topIssues = computed(() => this.stats().top_issues.slice(0, 5));
+
+  /**
+   * The four turf-wide numbers, in the mode's own words. A GOTV shift is measured in
+   * reminders given and ballots already found cast, not in supporter IDs — the storage is
+   * the same survey rows either way; only the words change.
+   */
+  protected readonly statCards = computed<{ label: string; value: string }[]>(() => {
+    const s = this.stats();
+    const attempted = `${s.doors_attempted} of ${s.doors_total}`;
+    if (this.store.mode() === 'gotv') {
+      return [
+        { label: 'Doors attempted', value: attempted },
+        { label: 'Reminded to vote', value: String(s.supporters) },
+        { label: 'Already voted', value: String(s.already_voted) },
+        { label: 'Contact rate', value: `${s.contact_rate}%` },
+      ];
+    }
+    return [
+      { label: 'Doors attempted', value: attempted },
+      { label: 'Conversations', value: String(s.conversations) },
+      { label: "Supporters ID'd", value: String(s.supporters) },
+      { label: 'Contact rate', value: `${s.contact_rate}%` },
+    ];
+  });
   /** Held results that a re-send could still fix; the rest can only be read and discarded. */
   protected readonly retryableCount = computed(() => this.store.blocked().filter((b) => b.retryable).length);
 

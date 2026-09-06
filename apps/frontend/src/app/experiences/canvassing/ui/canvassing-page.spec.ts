@@ -65,6 +65,7 @@ function report(overrides: Partial<FieldReport> = {}): FieldReport {
     byHour: [{ hour: 13, conversations: 5, attempts: 12 }],
     byTeam: [],
     topCanvassers: [{ name: 'Dana', doors: 12 }],
+    byMode: [{ mode: 'canvass', doors: 12, conversations: 5, supporter: 3, already_voted: 0 }],
     ...overrides,
   };
 }
@@ -140,6 +141,29 @@ describe('CanvassingPage', () => {
         { provide: ConfirmDialogService, useValue: { confirm: vi.fn(), prompt: vi.fn() } },
         { provide: OrgModeService, useValue: { term: () => 'Door knocking' } },
       ],
+    });
+  });
+
+  describe('the GOTV card on the field report', () => {
+    it('appears, in GOTV words, only when the range holds GOTV knocks', async () => {
+      svc.getFieldReport.mockResolvedValue(
+        report({
+          byMode: [
+            { mode: 'canvass', doors: 10, conversations: 4, supporter: 2, already_voted: 0 },
+            { mode: 'gotv', doors: 2, conversations: 1, supporter: 1, already_voted: 1 },
+          ],
+        }),
+      );
+      await openReport();
+      const text = ((fixture.nativeElement as HTMLElement).textContent ?? '').replace(/\s+/g, ' ');
+      expect(text).toContain('reminded to vote');
+      expect(text).toContain('already voted');
+    });
+
+    it('stays away from an all-persuasion range', async () => {
+      await openReport();
+      const text = ((fixture.nativeElement as HTMLElement).textContent ?? '').replace(/\s+/g, ' ');
+      expect(text).not.toContain('reminded to vote');
     });
   });
 

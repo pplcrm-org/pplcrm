@@ -206,6 +206,10 @@ export class CanvassingPage implements OnInit {
 
   protected readonly reportRange = signal<ReportRange>('week');
   protected readonly report = signal<FieldReport | null>(null);
+  /** The range's GOTV knocks, or null when there are none — gates the GOTV report card. */
+  protected readonly gotvReport = computed(
+    () => this.report()?.byMode.find((m) => m.mode === 'gotv' && m.doors > 0) ?? null,
+  );
   protected readonly coverage = signal<CoverageFull | null>(null);
   protected readonly coverageView = signal<CoverageView>('map');
   /** True while a pan or zoom is being answered, so the caption can say the map is catching up. */

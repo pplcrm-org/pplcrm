@@ -30,6 +30,19 @@ export interface FieldReport {
   byHour: { hour: number; conversations: number; attempts: number }[];
   byTeam: { team_id: string | null; team_name: string; doors: number; conversations: number; supportIds: number }[];
   topCanvassers: { name: string; doors: number }[];
+  /**
+   * The same knocks split by what their turf was for. On a GOTV turf a 'supporter'
+   * response IS the reminder given and 'already_voted' the ballot found cast, so this is
+   * what lets the report say "voters reminded" instead of folding GOTV work into the
+   * persuasion numbers. Only modes with knocks in range appear.
+   */
+  byMode: {
+    mode: 'canvass' | 'gotv' | 'delivery';
+    doors: number;
+    conversations: number;
+    supporter: number;
+    already_voted: number;
+  }[];
 }
 
 /** One door's knock history inside a turf, rolled up for the turf detail page. */
@@ -467,6 +480,25 @@ export class TurfKnocksRepo extends BaseRepository<'turf_knocks'> {
       .select(['canvasser_name as name', sql<number>`COUNT(*)`.as('doors')])
       .execute();
 
+    // The knocks split by their turf's mode. INNER join on purpose: a knock whose turf
+    // was deleted has no mode to file it under, and inventing 'canvass' for it here
+    // would make this table disagree with itself.
+    const byModeRows = await this.getSelect(trx)
+      .innerJoin('turfs', 'turfs.id', 'turf_knocks.turf_id')
+      .where('turf_knocks.tenant_id', '=', tenant_id)
+      .where('turfs.tenant_id', '=', tenant_id)
+      .where('turf_knocks.knocked_at', '>=', input.from)
+      .where('turf_knocks.knocked_at', '<', input.to)
+      .groupBy('turfs.mode')
+      .select([
+        'turfs.mode as mode',
+        sql<number>`COUNT(*)`.as('doors'),
+        sql<number>`COUNT(*) FILTER (WHERE turf_knocks.outcome = ${CONVERSATION})`.as('conversations'),
+        sql<number>`COUNT(*) FILTER (WHERE turf_knocks.response = 'supporter')`.as('supporter'),
+        sql<number>`COUNT(*) FILTER (WHERE turf_knocks.response = 'already_voted')`.as('already_voted'),
+      ])
+      .execute();
+
     const attempts = Number(totals?.attempts ?? 0);
     const conversations = Number(totals?.conversations ?? 0);
     const supporters = Number(totals?.supporter ?? 0);
@@ -502,6 +534,14 @@ export class TurfKnocksRepo extends BaseRepository<'turf_knocks'> {
         supportIds: Number(r.support_ids ?? 0),
       })),
       topCanvassers: topRows.map((r) => ({ name: String(r.name), doors: Number(r.doors ?? 0) })),
+      byMode: byModeRows.map((r) => ({
+        // Tolerant narrowing, same as the turf reads: an unknown stored value files as canvass.
+        mode: r.mode === 'gotv' || r.mode === 'delivery' ? r.mode : ('canvass' as const),
+        doors: Number(r.doors ?? 0),
+        conversations: Number(r.conversations ?? 0),
+        supporter: Number(r.supporter ?? 0),
+        already_voted: Number(r.already_voted ?? 0),
+      })),
     };
   }
 }

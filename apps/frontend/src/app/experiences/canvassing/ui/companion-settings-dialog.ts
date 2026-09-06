@@ -71,6 +71,19 @@ const MAX_ISSUES = 30;
         </label>
 
         <label class="flex flex-col gap-2">
+          <span class="text-xs font-medium">GOTV script (GOTV outings only)</span>
+          <textarea
+            class="textarea textarea-bordered h-20 w-full text-xs"
+            placeholder="Hi, I'm {name} with {campaign}. Election day is coming up — can we count on you to vote?"
+            [ngModel]="gotvScript()"
+            (ngModelChange)="gotvScript.set($event)"
+          ></textarea>
+          <span class="text-xs text-base-content/50">
+            Shown instead of the door script on turfs cut in GOTV mode. Leave blank to use the door script there too.
+          </span>
+        </label>
+
+        <label class="flex flex-col gap-2">
           <span class="text-xs font-medium">Live location detail (the Live tab)</span>
           <select
             class="select select-bordered select-sm w-full"
@@ -138,6 +151,7 @@ export class CompanionSettingsDialog implements OnInit {
         campaign_id: this.campaignId,
         issues: this.issues(),
         script: this.script().trim() || null,
+        gotv_script: this.gotvScript().trim() || null,
         location_precision: this.precision(),
       });
       this.alerts.showSuccess('Saved. Companions pick this up on their next sync');
@@ -152,6 +166,7 @@ export class CompanionSettingsDialog implements OnInit {
   }
 
   protected readonly script = signal('');
+  protected readonly gotvScript = signal('');
 
   private async load(): Promise<void> {
     try {
@@ -160,6 +175,7 @@ export class CompanionSettingsDialog implements OnInit {
       this.campaignName.set(settings.campaign_name);
       this.issues.set(settings.issues);
       this.script.set(settings.script);
+      this.gotvScript.set(settings.gotv_script ?? '');
       this.precision.set(settings.location_precision);
     } catch {
       this.alerts.showError('Could not load settings');

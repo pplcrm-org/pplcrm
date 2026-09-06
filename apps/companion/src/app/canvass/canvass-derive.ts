@@ -536,6 +536,8 @@ export interface MeStats {
   conversations: number;
   /** Surveys (person or household) recorded with support = 'supporter'. */
   supporters: number;
+  /** Surveys recorded with support = 'already_voted' — the GOTV Me tab's second number. */
+  already_voted: number;
   /** Doors with at least one conversation ÷ doors attempted, as a 0–100 integer. */
   contact_rate: number;
   /** Issues ranked by mentions across all surveys; count desc, then A–Z. */
@@ -545,12 +547,14 @@ export interface MeStats {
 export function meStats(households: readonly CompanionHousehold[]): MeStats {
   let attempted = 0;
   let supporters = 0;
+  let alreadyVoted = 0;
   let doorsWithConversation = 0;
   const issueCounts = new Map<string, number>();
 
   const tally = (survey: CompanionSurveyPrefill | null): void => {
     if (survey == null) return;
     if (survey.support === 'supporter') supporters += 1;
+    if (survey.support === 'already_voted') alreadyVoted += 1;
     for (const issue of survey.issues) issueCounts.set(issue, (issueCounts.get(issue) ?? 0) + 1);
   };
 
@@ -571,6 +575,7 @@ export function meStats(households: readonly CompanionHousehold[]): MeStats {
     doors_total: households.length,
     conversations: conversations(households),
     supporters,
+    already_voted: alreadyVoted,
     contact_rate: attempted > 0 ? Math.round((doorsWithConversation / attempted) * 100) : 0,
     top_issues,
   };
