@@ -1164,31 +1164,34 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         .where('household_id', '=', input.source_id)
         .execute();
 
-      // 8. delivery_requests.household_id is also ON DELETE CASCADE, so yard-sign requests at the
-      // source address would vanish with it. uq_delivery_requests_open_per_household is a partial
-      // unique index on (tenant_id, household_id) WHERE status IN ('new','approved'), so only one
-      // OPEN request may point at the surviving household. When both households have an open
-      // request the target's stays open and the source's is declined first, with the reason
-      // recorded — that moves it out of the partial index while keeping the row as history.
-      // Requests already delivered or declined sit outside the index and simply move across.
-      const targetOpenRequest = await trx
+      // 8. delivery_requests.household_id is also ON DELETE CASCADE, so sign/flyer requests at the
+      // source address would vanish with it. uq_delivery_requests_open_per_household_purpose is a
+      // partial unique index on (tenant_id, household_id, purpose) WHERE status IN
+      // ('new','approved'), so only one OPEN request OF EACH KIND may point at the surviving
+      // household. For each purpose where both households hold an open request, the target's stays
+      // open and the source's is declined first, with the reason recorded — that moves it out of
+      // the partial index while keeping the row as history. A source request whose purpose the
+      // target does not hold open moves across untouched, as do delivered/declined rows.
+      const targetOpenRows = await trx
         .selectFrom('delivery_requests')
-        .select('id')
+        .select('purpose')
         .where('tenant_id', '=', input.tenant_id)
         .where('household_id', '=', input.target_id)
         .where('status', 'in', ['new', 'approved'])
-        .executeTakeFirst();
-      if (targetOpenRequest) {
+        .execute();
+      const collidingPurposes = [...new Set(targetOpenRows.map((r) => r.purpose))];
+      if (collidingPurposes.length > 0) {
         await trx
           .updateTable('delivery_requests')
           .set({
             status: 'declined',
-            skip_reason: 'Household records merged — the surviving household already has an open sign request',
+            skip_reason: 'Household records merged — the surviving household already has an open request of this kind',
             updated_at: sql`now()`,
             updatedby_id: input.user_id,
           })
           .where('tenant_id', '=', input.tenant_id)
           .where('household_id', '=', input.source_id)
+          .where('purpose', 'in', collidingPurposes)
           .where('status', 'in', ['new', 'approved'])
           .execute();
       }

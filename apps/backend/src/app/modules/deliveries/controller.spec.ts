@@ -478,7 +478,7 @@ describe('DeliveriesController — one open request per household', () => {
     // duplicate stop on a route.
     await expect(
       controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId }),
-    ).rejects.toThrow(/already has an open delivery request/i);
+    ).rejects.toThrow(/already has an open yard-sign request/i);
 
     const open = await db
       .selectFrom('delivery_requests')
@@ -492,18 +492,18 @@ describe('DeliveriesController — one open request per household', () => {
 
   it('converts a concurrent-insert 23505 (past the pre-check) into a graceful conflict, never a 500', async () => {
     // Simulate the race the new partial unique index closes: both callers clear the pre-check, then
-    // one insert loses on uq_delivery_requests_open_per_household. The controller must translate that
+    // one insert loses on uq_delivery_requests_open_per_household_purpose. The controller must translate that
     // Postgres unique-violation into the same "already open" 409 the pre-check throws.
     const householdId = await freshHousehold();
     const violation = Object.assign(new Error('duplicate key value violates unique constraint'), {
       code: '23505',
-      constraint: 'uq_delivery_requests_open_per_household',
+      constraint: 'uq_delivery_requests_open_per_household_purpose',
     });
     const addSpy = vi.spyOn((controller as any).requestsRepo, 'add').mockRejectedValue(violation);
 
     await expect(
       controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId }),
-    ).rejects.toThrow(/already has an open delivery request/i);
+    ).rejects.toThrow(/already has an open yard-sign request/i);
     expect(addSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -545,7 +545,7 @@ describe('DeliveriesController — one open request per household', () => {
     // invisible (campaign-scoped reads), so the message must say which campaign holds it.
     await expect(
       controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId }),
-    ).rejects.toThrow(/open delivery request in Fall Election\./);
+    ).rejects.toThrow(/open yard-sign request in Fall Election\./);
   });
 
   it('getSignStatus surfaces an open request held by another campaign', async () => {
@@ -597,7 +597,7 @@ describe('DeliveriesController — one open request per household', () => {
 
     // …but flipping it back to open collides with the real index and must surface as a conflict.
     await expect(controller.setRequestStatus(staffAuth, { ids: [String(declined.id)], status: 'new' })).rejects.toThrow(
-      /open delivery request in Fall Election\./,
+      /open yard-sign request in Fall Election\./,
     );
   });
 });
@@ -820,5 +820,116 @@ describe('DeliveriesController — sign_delivered automation trigger', () => {
 
     expect(triggerSpy).toHaveBeenCalledTimes(1);
     expect(triggerSpy).toHaveBeenCalledWith(s.tenantId, s.volunteerPersonId, 'sign_delivered', null, expect.anything());
+  });
+});
+
+describe('DeliveriesController — request purposes (one open request per household PER KIND)', () => {
+  const controller = new DeliveriesController();
+  const db = BaseRepository.dbInstance;
+  let s: Seed;
+  let staffAuth: IAuthKeyPayload;
+
+  const freshHousehold = async (): Promise<string> => {
+    const householdId = rand();
+    await db
+      .insertInto('households')
+      .values({
+        id: householdId,
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        createdby_id: s.organizerId,
+        updatedby_id: s.organizerId,
+      })
+      .execute();
+    return householdId;
+  };
+
+  beforeEach(async () => {
+    s = await seed(db);
+    staffAuth = { tenant_id: s.tenantId, user_id: s.organizerId, name: 'Sam Staff', session_id: 'sess', role: 'user' };
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await cleanup(db, s.tenantId);
+  });
+
+  it('an open yard-sign request and an open flyer request coexist on one household', async () => {
+    const householdId = await freshHousehold();
+    await controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId });
+    const flyer = await controller.addRequest(staffAuth, {
+      household_id: householdId,
+      campaign_id: s.campaignId,
+      purpose: 'flyer',
+    });
+    expect(flyer.id).toBeTruthy();
+
+    const open = await db
+      .selectFrom('delivery_requests')
+      .select(['purpose'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('household_id', '=', householdId)
+      .where('status', 'in', ['new', 'approved'])
+      .execute();
+    expect(open.map((r) => r.purpose).sort()).toEqual(['flyer', 'yard_sign']);
+  });
+
+  it('a second open flyer request is refused with a flyer-named conflict', async () => {
+    const householdId = await freshHousehold();
+    await controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId, purpose: 'flyer' });
+    await expect(
+      controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId, purpose: 'flyer' }),
+    ).rejects.toThrow(/already has an open flyer-drop request/i);
+  });
+
+  it('getSignStatus ignores flyer requests — a flyer never reads as yard-sign standing', async () => {
+    const householdId = await freshHousehold();
+    await controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId, purpose: 'flyer' });
+
+    const standing = await controller.getSignStatus(staffAuth, {
+      household_id: householdId,
+      campaign_id: s.campaignId,
+    });
+    expect(standing.request).toBeNull();
+    // The flyer request is also not "another campaign's open request" — it is a different task.
+    expect(standing.open_in_other_campaign).toBeNull();
+  });
+
+  it('undoHouseholdSignDelivery leaves a delivered flyer request untouched', async () => {
+    const householdId = await freshHousehold();
+    const flyer = await db
+      .insertInto('delivery_requests')
+      .values({
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        household_id: householdId,
+        person_id: null,
+        source: 'manual',
+        status: 'delivered',
+        purpose: 'flyer',
+        createdby_id: s.organizerId,
+        updatedby_id: s.organizerId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    // The canvass door's undo looks for the household's delivered YARD SIGN; with only a
+    // delivered flyer present it must find nothing and change nothing.
+    const undone = await db.transaction().execute(async (trx) =>
+      controller.undoHouseholdSignDelivery(trx, staffAuth, {
+        household_id: householdId,
+        campaign_id: s.campaignId,
+        via: 'via Canvass Companion (test)',
+      }),
+    );
+    expect(undone).toBe(false);
+
+    const row = await db
+      .selectFrom('delivery_requests')
+      .select(['status'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', String(flyer.id))
+      .executeTakeFirstOrThrow();
+    expect(String(row.status)).toBe('delivered');
   });
 });

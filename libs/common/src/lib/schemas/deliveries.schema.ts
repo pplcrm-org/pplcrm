@@ -7,7 +7,29 @@ import { idSchema, notesSchema } from './core.schema';
 export const DELIVERY_REQUEST_STATUSES = ['new', 'approved', 'declined', 'delivered'] as const;
 export const DELIVERY_ROUTE_STATUSES = ['draft', 'assigned', 'in_progress', 'completed', 'canceled'] as const;
 export const DELIVERY_STOP_STATUSES = ['pending', 'delivered', 'skipped'] as const;
-export const DELIVERY_SOURCES = ['web_form', 'manual'] as const;
+// Keep in lockstep with the chk_delivery_requests_source CHECK (widened by the 2026-08-22
+// donor-portal migration): 'canvass' = raised at the door, 'donor_portal' = the donor's own page.
+export const DELIVERY_SOURCES = ['web_form', 'manual', 'canvass', 'donor_portal'] as const;
+
+/**
+ * What the household is owed — 'yard_sign' | 'flyer'. GOTV is deliberately NOT a purpose:
+ * nobody "requests" a reminder to vote; GOTV is a turf mode (see canvassing.schema TURF_MODES).
+ * The open-per-household unique index is scoped per purpose: one open task of each kind per
+ * household, tenant-wide across campaigns.
+ */
+export const DELIVERY_PURPOSES = ['yard_sign', 'flyer'] as const;
+export type DeliveryPurpose = (typeof DELIVERY_PURPOSES)[number];
+
+export const DELIVERY_PURPOSE_LABELS: Record<DeliveryPurpose, string> = {
+  yard_sign: 'Yard sign',
+  flyer: 'Flyer drop',
+};
+
+/** The noun for conflict/explanation copy: "…already has an open yard-sign request". */
+export const DELIVERY_PURPOSE_NOUNS: Record<DeliveryPurpose, string> = {
+  yard_sign: 'yard-sign request',
+  flyer: 'flyer-drop request',
+};
 
 // The four failure reasons a volunteer can pick (spec §4.4). "Skip for now" (defer) is NOT a
 // reason — it keeps the stop pending and moves it to the end of the route.
@@ -29,10 +51,12 @@ export type DeliverySkipReason = (typeof DELIVERY_SKIP_REASONS)[number];
 
 // ---- Requests --------------------------------------------------------------
 export const AddDeliveryRequestObj = z.object({
-  /** Campaigns §15 — the context this yard-sign request belongs to; backend defaults to the office. */
+  /** Campaigns §15 — the context this request belongs to; backend defaults to the office. */
   campaign_id: idSchema.optional(),
   household_id: idSchema,
   person_id: idSchema.or(z.literal('')).nullable().optional(),
+  /** What the household is owed; the backend defaults to 'yard_sign'. */
+  purpose: z.enum(DELIVERY_PURPOSES).optional(),
   notes: notesSchema,
 });
 

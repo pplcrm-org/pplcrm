@@ -270,6 +270,10 @@ export {
   COVERAGE_MAX_DOORS,
   LogKnockObj,
   TURF_STATUSES,
+  TURF_MODES,
+  TURF_MODE_LABELS,
+  TURF_TRAVEL_MODES,
+  TURF_TRAVEL_LABELS,
   KNOCK_OUTCOMES,
   KNOCK_RESPONSES,
   KNOCK_OUTCOME_LABELS,
@@ -323,6 +327,9 @@ export {
   DELIVERY_ROUTE_STATUSES,
   DELIVERY_STOP_STATUSES,
   DELIVERY_SOURCES,
+  DELIVERY_PURPOSES,
+  DELIVERY_PURPOSE_LABELS,
+  DELIVERY_PURPOSE_NOUNS,
   DELIVERY_SKIP_REASONS,
   DONATION_METHODS,
   DONATION_METHOD_LABELS,
@@ -637,6 +644,8 @@ export {
 } from './lib/schemas/workflows.schema';
 export type {
   TurfStatus,
+  TurfMode,
+  TurfTravel,
   KnockOutcome,
   KnockResponse,
   CanvassStance,
@@ -682,6 +691,7 @@ export type {
   DeliveryStopStatus,
   DeliverySource,
   DeliverySkipReason,
+  DeliveryPurpose,
 } from './lib/schemas/deliveries.schema';
 
 export { debounce, escapeHtml, sleep, slugifyHandle, slugifyRecordName, RESERVED_SUBDOMAINS } from './lib/utils';

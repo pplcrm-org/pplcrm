@@ -30,9 +30,41 @@ export const KNOCK_OUTCOMES = [
   'inaccessible',
   'deceased',
   'data_error',
+  // Delivery-mode doors (turfs absorb deliveries): the sign/flyer reached the house, or it
+  // could not be delivered. These are still knocks — the volunteer stood there — and writing
+  // them is what makes a delivery turf's progress derivable like every other turf's.
+  'delivered',
+  'undeliverable',
   'cleared',
 ] as const;
 export type KnockOutcome = (typeof KNOCK_OUTCOMES)[number];
+
+/**
+ * What a turf outing is FOR (turfs.mode). The universe is always the list; the mode controls
+ * the companion door screen, the progress words, the script, and the report language.
+ * 'canvass' = every-door persuasion; 'gotv' = remind supporters to vote; 'delivery' = signs
+ * and flyers, cut from the approved delivery_requests pool.
+ */
+export const TURF_MODES = ['canvass', 'gotv', 'delivery'] as const;
+export type TurfMode = (typeof TURF_MODES)[number];
+
+export const TURF_MODE_LABELS: Record<TurfMode, string> = {
+  canvass: 'Every door',
+  gotv: 'GOTV',
+  delivery: 'Signs & flyers',
+};
+
+/**
+ * How the volunteer moves through the outing (turfs.travel). 'walk' renders the street-grouped
+ * walk list; 'drive' renders the ordered route view with per-stop navigation.
+ */
+export const TURF_TRAVEL_MODES = ['walk', 'drive'] as const;
+export type TurfTravel = (typeof TURF_TRAVEL_MODES)[number];
+
+export const TURF_TRAVEL_LABELS: Record<TurfTravel, string> = {
+  walk: 'Walk',
+  drive: 'Drive',
+};
 
 /**
  * The voter's stance, when a conversation happened — the spec §3.5 five-option
@@ -56,6 +88,8 @@ export const KNOCK_OUTCOME_LABELS: Record<KnockOutcome, string> = {
   inaccessible: "Couldn't reach",
   deceased: 'Deceased',
   data_error: 'Error in data',
+  delivered: 'Delivered',
+  undeliverable: "Couldn't deliver",
   cleared: 'Result cleared',
 };
 
@@ -109,6 +143,8 @@ export const AddTurfObj = z.object({
   campaign_id: idSchema.optional(),
   name: nameSchema('Name', 120),
   list_id: idSchema.nullable().optional(),
+  mode: z.enum(TURF_MODES).optional(),
+  travel: z.enum(TURF_TRAVEL_MODES).optional(),
   notes: notesSchema,
 });
 
@@ -122,6 +158,8 @@ export const UpdateTurfObj = z.object({
 export const CutTurfsObj = z.object({
   list_id: idSchema,
   doors_per_turf: z.number().int().min(5).max(500),
+  mode: z.enum(TURF_MODES).optional(),
+  travel: z.enum(TURF_TRAVEL_MODES).optional(),
 });
 
 export const AssignTurfObj = z.object({

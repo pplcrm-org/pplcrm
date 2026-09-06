@@ -206,6 +206,8 @@ export class DonorPortalController {
             .select(['status'])
             .where('tenant_id', '=', tenant_id)
             .where('household_id', '=', householdId)
+            // The donor page's control is a yard sign; a flyer request is a different task.
+            .where('purpose', '=', 'yard_sign')
             .where('status', 'in', ['new', 'approved', 'delivered'])
             .orderBy('created_at', 'desc')
             .executeTakeFirst()
@@ -748,6 +750,8 @@ export class DonorPortalController {
           .select(['id'])
           .where('tenant_id', '=', link.tenant_id)
           .where('household_id', '=', householdId)
+          // Yard signs only — an open flyer request must not block the donor's sign ask.
+          .where('purpose', '=', 'yard_sign')
           .where('status', 'in', ['new', 'approved'])
           .executeTakeFirst();
         if (open) return 'already_open';
@@ -775,6 +779,7 @@ export class DonorPortalController {
             web_form_id: null,
             source: 'donor_portal',
             status: 'new',
+            purpose: 'yard_sign',
             createdby_id: actor,
             updatedby_id: actor,
           })

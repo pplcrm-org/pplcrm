@@ -280,6 +280,9 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
       .select(['id'])
       .where('tenant_id', '=', tenantId)
       .where('household_id', '=', householdId)
+      // Yard signs only: an open FLYER request on this household must not block sign intake
+      // (the open-per-household index is scoped per purpose).
+      .where('purpose', '=', 'yard_sign')
       .where('status', 'in', ['new', 'approved'])
       .executeTakeFirst();
     if (open) return;
@@ -293,6 +296,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
         web_form_id: webFormId,
         source: 'web_form',
         status: 'new',
+        purpose: 'yard_sign',
         createdby_id: creatorId,
         updatedby_id: creatorId,
       })

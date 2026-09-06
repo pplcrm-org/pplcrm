@@ -158,6 +158,9 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
       .where('dr.tenant_id', '=', tenantId)
       .where('dr.household_id', '=', householdId)
       .where('dr.campaign_id', '=', campaignId)
+      // This read backs the "Yard sign" control — a flyer request must never surface as the
+      // household's yard-sign standing.
+      .where('dr.purpose', '=', 'yard_sign')
       .select([
         'dr.id as id',
         'dr.status as status',
@@ -189,14 +192,15 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
   }
 
   /**
-   * The household's open (new/approved) request with its campaign name, regardless of campaign —
-   * the open-per-household unique index guarantees at most one tenant-wide. Backs the conflict
-   * message when another campaign holds the open request, and the cross-campaign note in the
-   * yard-sign standing control.
+   * The household's open (new/approved) request OF ONE PURPOSE with its campaign name, regardless
+   * of campaign — the per-purpose open-per-household unique index guarantees at most one
+   * tenant-wide per kind. Backs the conflict message when another campaign holds the open
+   * request, and the cross-campaign note in the yard-sign standing control.
    */
   public async getOpenForHousehold(
     tenantId: string,
     householdId: string,
+    purpose: 'yard_sign' | 'flyer',
     trx?: Transaction<Models>,
   ): Promise<{ id: string; status: string; campaign_id: string; campaign_name: string } | null> {
     const db = trx ?? this.db;
@@ -205,6 +209,7 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
       .innerJoin('campaigns as c', 'c.id', 'dr.campaign_id')
       .where('dr.tenant_id', '=', tenantId)
       .where('dr.household_id', '=', householdId)
+      .where('dr.purpose', '=', purpose)
       .where('dr.status', 'in', ['new', 'approved'])
       .select(['dr.id as id', 'dr.status as status', 'dr.campaign_id as campaign_id', 'c.name as campaign_name'])
       .limit(1)

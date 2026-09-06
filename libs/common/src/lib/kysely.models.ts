@@ -313,6 +313,10 @@ interface Campaigns extends Omit<RecordType, 'createdby_id'> {
   canvass_issues: Generated<string[]>;
   /** Door script shown (collapsible) at the top of the companion survey. */
   canvass_script: string | null;
+  /** GOTV-mode door script; NULL falls back to canvass_script. */
+  gotv_script: string | null;
+  /** Delivery-mode door script; NULL falls back to canvass_script. */
+  delivery_script: string | null;
   /** Live-tab privacy fallback: 'street' = dots and paths; 'turf' = presence only, the live
    *  API never returns a coordinate. See canvass_shifts / canvass_location_pings. */
   canvass_location_precision: Generated<'street' | 'turf'>;
@@ -572,6 +576,12 @@ export interface DeliveryRequests extends RecordType {
   // the chk_delivery_requests_source CHECK (widened by migration 2026-08-22-donor-portal.ts).
   source: Generated<'web_form' | 'manual' | 'canvass' | 'donor_portal'>;
   status: Generated<'new' | 'approved' | 'declined' | 'delivered'>;
+  /**
+   * What the household is owed — 'yard_sign' | 'flyer'. GOTV is deliberately NOT a purpose
+   * (nobody "requests" a reminder; that is a turf mode). The open-per-household unique index
+   * is scoped per purpose: one open task of each kind per household, tenant-wide.
+   */
+  purpose: Generated<'yard_sign' | 'flyer'>;
   notes: string | null;
   skip_reason: string | null;
 }
@@ -624,6 +634,14 @@ interface Turfs extends RecordType {
 
   name: string;
   status: string;
+  /**
+   * What the outing is for — 'canvass' (every-door persuasion) | 'gotv' (remind supporters
+   * to vote) | 'delivery' (signs/flyers cut from the delivery_requests pool). Controls the
+   * companion door screen, progress words and report language; the universe is the list.
+   */
+  mode: Generated<'canvass' | 'gotv' | 'delivery'>;
+  /** How the volunteer moves — 'walk' (street-grouped list) | 'drive' (ordered route view). */
+  travel: Generated<'walk' | 'drive'>;
   list_id: string | null;
   target_doors: number | null;
   centroid_lat: number | null;

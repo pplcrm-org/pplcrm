@@ -2,10 +2,12 @@ import { createHash, randomBytes } from 'crypto';
 
 import type { Kysely, Transaction } from 'kysely';
 
+import { DELIVERY_PURPOSE_NOUNS } from '../../../../../../libs/common/src';
 import type {
   AddDeliveryRequestType,
   AssignVolunteerType,
   CommitDeliveriesType,
+  DeliveryPurpose,
   GetSignStatusType,
   IAuthKeyPayload,
   PlanDeliveriesType,
@@ -110,8 +112,17 @@ function deriveRouteName(firstAddress: string, date: Date): string {
   return `${area} area — ${label}`;
 }
 
-/** The partial unique index enforcing "one open delivery request per household" (§14). */
-const OPEN_HOUSEHOLD_UNIQUE_INDEX = 'uq_delivery_requests_open_per_household';
+/**
+ * The partial unique index enforcing "one open delivery request per household PER PURPOSE"
+ * (§14; scoped per purpose by the 2026-09-06 turf-modes migration — an open yard-sign request
+ * and an open flyer request may coexist on one household, two of the same kind may not).
+ */
+const OPEN_HOUSEHOLD_UNIQUE_INDEX = 'uq_delivery_requests_open_per_household_purpose';
+
+/** Narrow a DB purpose value; unknown stored values read as the default purpose. */
+function asPurpose(value: unknown): DeliveryPurpose {
+  return value === 'flyer' ? 'flyer' : 'yard_sign';
+}
 
 /**
  * True for the Postgres unique-violation (23505) raised by the open-per-household partial index —
@@ -154,7 +165,7 @@ export class DeliveriesController {
     // leaving the UI to offer a create that can only 409 (disclosure over suppression).
     let open_in_other_campaign: { campaign_id: string; campaign_name: string; status: string } | null = null;
     if (!request || request.status === 'declined' || request.status === 'delivered') {
-      const open = await this.requestsRepo.getOpenForHousehold(auth.tenant_id, input.household_id);
+      const open = await this.requestsRepo.getOpenForHousehold(auth.tenant_id, input.household_id, 'yard_sign');
       if (open && open.campaign_id !== String(input.campaign_id)) {
         open_in_other_campaign = {
           campaign_id: open.campaign_id,
@@ -166,25 +177,28 @@ export class DeliveriesController {
     return { request, open_in_other_campaign };
   }
 
-  /** The 409 for "one open request per household", naming the campaign that holds it when known. */
-  private openHouseholdConflictError(open: { campaign_name: string } | null): ConflictError {
+  /** The 409 for "one open request per household per kind", naming purpose + holding campaign. */
+  private openHouseholdConflictError(purpose: DeliveryPurpose, open: { campaign_name: string } | null): ConflictError {
+    const noun = DELIVERY_PURPOSE_NOUNS[purpose];
     return new ConflictError(
       open
-        ? `This household already has an open delivery request in ${open.campaign_name}.`
-        : 'This household already has an open delivery request.',
+        ? `This household already has an open ${noun} in ${open.campaign_name}.`
+        : `This household already has an open ${noun}.`,
     );
   }
 
   public async addRequest(auth: IAuthKeyPayload, input: AddDeliveryRequestType) {
-    // Guard: a household with an OPEN request (new/approved, incl. routed) can't have a second.
-    const open = await this.requestsRepo.getOpenForHousehold(auth.tenant_id, input.household_id);
+    const purpose = input.purpose ?? 'yard_sign';
+    // Guard: a household with an OPEN request of this kind (new/approved, incl. routed) can't
+    // have a second one. A different kind (sign vs flyer) may coexist.
+    const open = await this.requestsRepo.getOpenForHousehold(auth.tenant_id, input.household_id, purpose);
     if (open) {
-      throw this.openHouseholdConflictError(open);
+      throw this.openHouseholdConflictError(purpose, open);
     }
     const personId = input.person_id ? String(input.person_id) : null;
     const row = {
       tenant_id: auth.tenant_id,
-      // The context this yard-sign request belongs to (§15); defaults to the office.
+      // The context this request belongs to (§15); defaults to the office.
       campaign_id: await this.campaignsRepo.resolveForWrite({
         tenant_id: auth.tenant_id,
         campaign_id: input.campaign_id,
@@ -194,6 +208,7 @@ export class DeliveriesController {
       web_form_id: null,
       source: 'manual',
       status: 'new',
+      purpose,
       notes: input.notes ?? null,
       createdby_id: auth.user_id,
       updatedby_id: auth.user_id,
@@ -203,11 +218,11 @@ export class DeliveriesController {
       created = await this.requestsRepo.add({ row });
     } catch (err) {
       // The pre-check above is only a fast path: a concurrent create can pass it too and then hit
-      // the partial unique index uq_delivery_requests_open_per_household (23505). Treat the race as
-      // exactly what it is — an open request already exists — a 409, never an unhandled 500.
+      // the partial unique index uq_delivery_requests_open_per_household_purpose (23505). Treat
+      // the race as exactly what it is — an open request already exists — a 409, never a 500.
       if (isOpenHouseholdConflict(err)) {
-        const winner = await this.requestsRepo.getOpenForHousehold(auth.tenant_id, input.household_id);
-        throw this.openHouseholdConflictError(winner);
+        const winner = await this.requestsRepo.getOpenForHousehold(auth.tenant_id, input.household_id, purpose);
+        throw this.openHouseholdConflictError(purpose, winner);
       }
       throw err;
     }
@@ -250,24 +265,26 @@ export class DeliveriesController {
       // Reopening a declined/delivered request (→ new/approved) can collide with the
       // open-per-household index when another campaign already holds the open request.
       if (isOpenHouseholdConflict(err)) {
-        const holder =
+        const blocked =
           input.ids.length === 1 ? await this.openRequestBlockingReopen(auth.tenant_id, input.ids[0] ?? '') : null;
-        throw this.openHouseholdConflictError(holder);
+        throw this.openHouseholdConflictError(blocked?.purpose ?? 'yard_sign', blocked?.open ?? null);
       }
       throw err;
     }
   }
 
-  /** The open request on the same household as `requestId` — the row a reopen collided with. */
+  /** The open same-purpose request on the same household as `requestId` — what a reopen collided with. */
   private async openRequestBlockingReopen(tenantId: string, requestId: string) {
     const row = await this.requestsRepo.db
       .selectFrom('delivery_requests')
-      .select(['household_id'])
+      .select(['household_id', 'purpose'])
       .where('tenant_id', '=', tenantId)
       .where('id', '=', requestId)
       .executeTakeFirst();
     if (!row) return null;
-    return this.requestsRepo.getOpenForHousehold(tenantId, String(row.household_id));
+    const purpose = asPurpose(row.purpose);
+    const open = await this.requestsRepo.getOpenForHousehold(tenantId, String(row.household_id), purpose);
+    return { purpose, open };
   }
 
   private async doSetRequestStatus(auth: IAuthKeyPayload, input: SetDeliveryRequestStatusType) {
@@ -408,6 +425,9 @@ export class DeliveriesController {
       .where('tenant_id', '=', auth.tenant_id)
       .where('household_id', '=', input.household_id)
       .where('campaign_id', '=', input.campaign_id)
+      // Yard signs only: the canvass door's undo must never find and revert a flyer
+      // delivery on the same household — that record belongs to a different task.
+      .where('purpose', '=', 'yard_sign')
       .where('status', '=', 'delivered')
       .orderBy('updated_at', 'desc')
       .executeTakeFirst();
@@ -463,6 +483,8 @@ export class DeliveriesController {
       .where('tenant_id', '=', auth.tenant_id)
       .where('household_id', '=', input.household_id)
       .where('campaign_id', '=', input.campaign_id)
+      // The doorstep handover is a yard sign; a flyer request must be neither reused nor blocked.
+      .where('purpose', '=', 'yard_sign')
       .where('status', 'in', ['new', 'approved', 'delivered'])
       .orderBy('updated_at', 'desc')
       .executeTakeFirst();
@@ -480,6 +502,7 @@ export class DeliveriesController {
         web_form_id: null,
         source: 'canvass',
         status: 'new',
+        purpose: 'yard_sign',
         notes: null,
         createdby_id: auth.user_id,
         updatedby_id: auth.user_id,

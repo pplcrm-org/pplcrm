@@ -2477,6 +2477,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         .select(['id'])
         .where('tenant_id', '=', tenant_id)
         .where('household_id', '=', household_id)
+        // Yard signs only — the per-purpose open index means a flyer request neither blocks
+        // nor satisfies "wants a yard sign".
+        .where('purpose', '=', 'yard_sign')
         .where('status', 'in', ['new', 'approved'])
         .executeTakeFirst();
       if (!open) {
@@ -2490,6 +2493,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
             web_form_id: null,
             source: 'canvass',
             status: 'new',
+            purpose: 'yard_sign',
             notes: null,
             createdby_id: actor,
             updatedby_id: actor,
@@ -2866,6 +2870,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         .select(['household_id', 'status', 'created_at'])
         .where('tenant_id', '=', tenant_id)
         .where('campaign_id', '=', campaign_id)
+        // Yard signs only: a flyer request must not render as a sign owed at the door.
+        .where('purpose', '=', 'yard_sign')
         .where('household_id', 'in', ids)
         // 'delivered' travels too: a door that already has its sign has to say so, or a
         // canvasser reads an open request off the screen and hands out a second one.
