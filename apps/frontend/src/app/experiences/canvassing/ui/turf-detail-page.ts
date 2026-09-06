@@ -16,6 +16,7 @@ import { RecordActivities } from '@experiences/activity/ui/record-activities/rec
 import {
   KNOCK_OUTCOME_LABELS,
   KNOCK_RESPONSE_LABELS,
+  TURF_MODE_LABELS,
   formatWalkDistance,
   groupForWalk,
   isKnockOutcome,
@@ -29,6 +30,7 @@ import { CanvassingService, type TurfDetail, type TurfDoor, type TurfLive } from
 import { companionUrl, volunteerLinkSentPhrase } from '../../../shared/public-pages';
 import { AssignTurfDialog } from './assign-turf-dialog';
 import {
+  TURF_MODE_TONE,
   TURF_STATUS_HINT,
   TURF_STATUS_LABEL,
   TURF_STATUS_TONE,
@@ -150,6 +152,8 @@ export class TurfDetailPage {
 
   protected readonly statusLabel = TURF_STATUS_LABEL;
   protected readonly statusHint = TURF_STATUS_HINT;
+  protected readonly modeLabel = TURF_MODE_LABELS;
+  protected readonly modeTone = TURF_MODE_TONE;
   protected readonly doorFilters = DOOR_FILTERS;
   protected readonly doorLabel = DOOR_LABEL;
 

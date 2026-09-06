@@ -24,7 +24,10 @@
             <span [title]="statusHint[d.status]">
               <pc-status-badge [type]="tone(d.status)">{{ statusLabel[d.status] }}</pc-status-badge>
             </span>
-            @if (liveNow().length > 0) {
+            <!-- Only non-canvass outings wear a mode chip — the common case stays unlabelled. -->
+            @if (d.mode !== 'canvass') {
+            <pc-status-badge [type]="modeTone[d.mode]">{{ modeLabel[d.mode] }}</pc-status-badge>
+            } @if (liveNow().length > 0) {
             <span class="rounded-full bg-live px-2 py-0.5 text-[10px] font-bold tracking-wide text-live-content">
               SOMEONE ON IT NOW
             </span>

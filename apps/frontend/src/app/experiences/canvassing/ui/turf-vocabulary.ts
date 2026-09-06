@@ -2,6 +2,8 @@ import type { PromptOptions } from '@uxcommon/components/confirm-dialog.service'
 import type { PcMapVariant } from '@uxcommon/components/map/map-types';
 import type { PcStatusType } from '@uxcommon/components/status-badge/status-badge';
 
+import type { TurfMode } from '../../../../../../../libs/common/src';
+
 /**
  * The one vocabulary for turf status, shared by the turf list, the strip map and the
  * turf detail page so the same turf never reads two different ways.
@@ -37,6 +39,28 @@ export const TURF_STATUS_TONE: Record<TurfStatus, PcStatusType> = {
   complete: 'neutral',
   retired: 'ghost',
 };
+
+/**
+ * Badge tone for the turf's mode chip. Plain canvass turfs carry NO chip at all
+ * (the common case must not wear a label); only GOTV and delivery outings are
+ * marked, since they change what the volunteer's door screen does.
+ */
+export const TURF_MODE_TONE: Record<TurfMode, PcStatusType> = {
+  canvass: 'ghost',
+  gotv: 'warning',
+  delivery: 'info',
+};
+
+/**
+ * The one sentence under a turf name saying where its doors came from.
+ * `targetDoors` set with no list = cut from the "Everyone" universe (the whole
+ * workspace, no list); neither = the turf was added by hand.
+ */
+export function turfUniverseLine(listName: string | null, targetDoors: number | null): string {
+  if (listName) return `Cut from ${listName}`;
+  if (targetDoors != null) return 'Cut from Everyone — the whole workspace';
+  return 'Built by hand, not from a list';
+}
 
 /** Pin tint on the turf strip map, matched to the badge tone. */
 export const TURF_STATUS_MAP_VARIANT: Record<TurfStatus, PcMapVariant> = {

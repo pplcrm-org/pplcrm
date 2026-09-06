@@ -33,6 +33,7 @@ import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
 import { isPrivilegedRole } from '@common';
 
 import type { FieldReportRangeType, MapViewportType } from '../../../../../../../libs/common/src';
+import { TURF_MODE_LABELS } from '../../../../../../../libs/common/src';
 import {
   CanvassingService,
   type Coverage,
@@ -48,12 +49,14 @@ import { CanvassLiveTab } from './live-tab';
 import { CompanionSettingsDialog } from './companion-settings-dialog';
 import { CutTurfsDialog } from './cut-turfs-dialog';
 import {
+  TURF_MODE_TONE,
   TURF_STATUS_HINT,
   TURF_STATUS_LABEL,
   TURF_STATUS_MAP_VARIANT,
   TURF_STATUS_TONE,
   TURF_WALKED_LEGEND,
   TURF_WALKED_VARIANT,
+  turfUniverseLine,
   turfWalkedBucket,
   turfWalkedPct,
   refreshFromListExplainer,
@@ -231,6 +234,9 @@ export class CanvassingPage implements OnInit {
   protected readonly statusLabel = TURF_STATUS_LABEL;
   protected readonly statusHint = TURF_STATUS_HINT;
   protected readonly statusTone = TURF_STATUS_TONE;
+  protected readonly modeLabel = TURF_MODE_LABELS;
+  protected readonly modeTone = TURF_MODE_TONE;
+  protected readonly universeLine = turfUniverseLine;
   protected readonly coverageLegend = COVERAGE_LEGEND;
   protected readonly turfWalkedLegend = TURF_WALKED_LEGEND;
 
@@ -630,12 +636,19 @@ export class CanvassingPage implements OnInit {
     }
   }
 
+  /** A turf that can be re-synced: cut from a list, or cut from the Everyone universe. */
+  protected canRefresh(t: TurfListItem): boolean {
+    return t.list_name != null || t.target_doors != null;
+  }
+
   protected async refresh(t: TurfListItem): Promise<void> {
-    if (!t.list_name) return;
+    if (!this.canRefresh(t)) return;
+    // The Everyone universe has no list row; the explainer names it the way the wizard did.
+    const universeName = t.list_name ?? 'Everyone';
     const mapMissing = t.boundary_name != null && t.boundary_set_id == null;
     const ok = await this.dialog.confirm({
-      title: `Re-read "${t.list_name}"?`,
-      message: refreshFromListExplainer(t.list_name, mapMissing),
+      title: `Re-read "${universeName}"?`,
+      message: refreshFromListExplainer(universeName, mapMissing),
       confirmText: 'Refresh doors',
     });
     if (!ok) return;
@@ -643,7 +656,7 @@ export class CanvassingPage implements OnInit {
     const end = this._loading.begin();
     try {
       const res = await this.svc.refreshFromList(t.id);
-      this.alerts.showSuccess(refreshResultMessage(t.list_name, res));
+      this.alerts.showSuccess(refreshResultMessage(universeName, res));
       await this.loadTurfs();
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to refresh turf.');

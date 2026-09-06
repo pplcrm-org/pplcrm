@@ -181,6 +181,11 @@ export interface TurfListItem {
   list_id: string | null;
   list_name: string | null;
   /**
+   * The cut's doors-per-turf setting, null for a turf added by hand. With a null list this is
+   * what tells "cut from the Everyone universe" apart from "built by hand" in the UI.
+   */
+  target_doors: number | null;
+  /**
    * The area this turf covers — 'Ward 12', 'Poll 043'. Null means the turf has no area of its
    * own: it was cut with no boundary map, or its doors fell outside every area of the map that
    * was used. Either way the doors were grouped on geography alone, and the UI says so rather
@@ -457,6 +462,10 @@ export interface TurfDetail {
   id: string;
   name: string;
   status: TurfDisplayStatus;
+  /** What the outing is for — controls chips, door screen and report words. */
+  mode: TurfMode;
+  /** How the volunteer moves — street view (walk) or ordered route view (drive). */
+  travel: TurfTravel;
   list_id: string | null;
   list_name: string | null;
   campaign_name: string;
@@ -578,6 +587,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         travel: r.travel,
         list_id: r.list_id,
         list_name: r.list_name,
+        target_doors: r.target_doors,
         boundary_name: r.boundary_name,
         boundary_set_id: r.boundary_set_id,
         centroid_lat: r.centroid_lat,
@@ -655,6 +665,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       id: row.id,
       name: row.name,
       status: this.displayStatus(row, attempted, lastAt, (roster.get(turfId) ?? []).length > 0),
+      mode: row.mode,
+      travel: row.travel,
       list_id: row.list_id,
       list_name: row.list_name,
       campaign_name: campaign.name,

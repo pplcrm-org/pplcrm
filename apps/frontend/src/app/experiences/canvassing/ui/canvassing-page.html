@@ -160,9 +160,13 @@
                 <span [title]="statusHint[t.status]">
                   <pc-status-badge [type]="statusTone[t.status]" size="sm">{{ statusLabel[t.status] }}</pc-status-badge>
                 </span>
+                <!-- Only non-canvass outings wear a mode chip — the common case stays unlabelled. -->
+                @if (t.mode !== 'canvass') {
+                <pc-status-badge [type]="modeTone[t.mode]" size="sm">{{ modeLabel[t.mode] }}</pc-status-badge>
+                }
               </div>
               <div class="text-xs text-base-content/50">
-                @if (t.list_name) { Cut from {{ t.list_name }} } @else { Built by hand, not from a list }
+                {{ universeLine(t.list_name, t.target_doors) }}@if (t.travel === 'drive') { · driving }
               </div>
             </td>
             <td class="whitespace-nowrap">{{ t.door_count }} doors</td>
@@ -219,10 +223,12 @@
                 <li>
                   <button type="button" (click)="qrTarget.set(t)">Show join QR</button>
                 </li>
-                <!-- Only a turf cut from a list can be re-synced with one. Naming the list
+                <!-- Only a cut turf can be re-synced with its universe. Naming the list
                      in the label is what makes the action legible at all (§2/§3). -->
                 @if (t.list_name) {
                 <li><button type="button" (click)="refresh(t)">Refresh doors from {{ t.list_name }}</button></li>
+                } @else if (canRefresh(t)) {
+                <li><button type="button" (click)="refresh(t)">Refresh doors — Everyone universe</button></li>
                 } @else {
                 <li>
                   <button type="button" disabled title="This turf was built by hand, so there is no list to re-read.">
