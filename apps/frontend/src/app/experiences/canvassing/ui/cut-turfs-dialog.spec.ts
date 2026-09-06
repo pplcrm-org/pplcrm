@@ -15,6 +15,7 @@ describe('CutTurfsDialog', () => {
   let mockLists: { getAllWithCounts: ReturnType<typeof vi.fn> };
   let mockCanvassing: {
     cutTurfs: ReturnType<typeof vi.fn>;
+    ensureUniverseList: ReturnType<typeof vi.fn>;
     previewCut: ReturnType<typeof vi.fn>;
     workspaceHasBoundaryMap: ReturnType<typeof vi.fn>;
   };
@@ -34,6 +35,7 @@ describe('CutTurfsDialog', () => {
 
     mockCanvassing = {
       cutTurfs: vi.fn(),
+      ensureUniverseList: vi.fn(),
       previewCut: vi.fn(),
       workspaceHasBoundaryMap: vi.fn().mockResolvedValue(true),
     };
@@ -50,6 +52,83 @@ describe('CutTurfsDialog', () => {
 
     fixture = TestBed.createComponent(CutTurfsDialog);
     component = fixture.componentInstance;
+  });
+
+  describe('the three-step wizard', () => {
+    const enginePreview = { doors: 12, unplaced: 0, turfCount: 2, avgDoorsPerTurf: 6, bounded: true };
+
+    it('choosing GOTV pre-selects the All supporters universe, still changeable', () => {
+      component['chooseMode']('gotv');
+
+      expect(component['step']()).toBe(2);
+      expect(component['universeChoice']()).toBe('supporters');
+    });
+
+    it('a list-backed preset resolves through ensureUniverseList and previews that list', async () => {
+      mockCanvassing.ensureUniverseList.mockResolvedValue({ list_id: '9', name: 'All supporters', reused: false });
+      mockCanvassing.previewCut.mockResolvedValue(enginePreview);
+      component['chooseMode']('gotv');
+
+      await component['continueToSize']();
+
+      expect(mockCanvassing.ensureUniverseList).toHaveBeenCalledWith({ preset: 'supporters', days: undefined });
+      expect(component['step']()).toBe(3);
+      expect(mockCanvassing.previewCut).toHaveBeenCalledWith({ list_id: '9', doors_per_turf: 40 });
+    });
+
+    it('the not-recent preset carries its day window', async () => {
+      mockCanvassing.ensureUniverseList.mockResolvedValue({
+        list_id: '9',
+        name: 'Not canvassed in 14 days',
+        reused: true,
+      });
+      mockCanvassing.previewCut.mockResolvedValue(enginePreview);
+      component['chooseMode']('canvass');
+      component['choosePreset']('not_recent');
+      component['notRecentDays'].set(14);
+
+      await component['continueToSize']();
+
+      expect(mockCanvassing.ensureUniverseList).toHaveBeenCalledWith({ preset: 'not_recent', days: 14 });
+    });
+
+    it('Everyone is not a list: no ensure call, and the preview asks with list_id null', async () => {
+      mockCanvassing.previewCut.mockResolvedValue(enginePreview);
+      component['chooseMode']('canvass');
+      component['choosePreset']('everyone');
+
+      await component['continueToSize']();
+
+      expect(mockCanvassing.ensureUniverseList).not.toHaveBeenCalled();
+      expect(mockCanvassing.previewCut).toHaveBeenCalledWith({ list_id: null, doors_per_turf: 40 });
+    });
+
+    it('cutting sends the chosen mode and travel with the resolved universe', async () => {
+      mockCanvassing.cutTurfs.mockResolvedValue({ created: 2, unplaced: 0 });
+      component['mode'].set('gotv');
+      component['travel'].set('drive');
+      component['resolvedListId'].set('9');
+
+      await component['cut']();
+
+      expect(mockCanvassing.cutTurfs).toHaveBeenCalledWith({
+        list_id: '9',
+        doors_per_turf: 40,
+        mode: 'gotv',
+        travel: 'drive',
+      });
+    });
+
+    it('a failed universe resolve stays on step 2 and reports the error', async () => {
+      mockCanvassing.ensureUniverseList.mockRejectedValue(new Error('offline'));
+      component['chooseMode']('canvass');
+      component['choosePreset']('untouched');
+
+      await component['continueToSize']();
+
+      expect(component['step']()).toBe(2);
+      expect(mockCanvassing.previewCut).not.toHaveBeenCalled();
+    });
   });
 
   it('reads the member count from list_size for both people and household lists', async () => {
@@ -98,7 +177,9 @@ describe('CutTurfsDialog', () => {
       else mockCanvassing.workspaceHasBoundaryMap.mockResolvedValue(opts.hasMap);
       mockCanvassing.previewCut.mockResolvedValue({ ...enginePreview, bounded: opts.bounded });
       component['hasBoundaryMap'].set(opts.hasMap);
-      component['selectedListId'].set('2');
+      // The preview only renders on the wizard's last step, with a resolved universe.
+      component['resolvedListId'].set('2');
+      component['step'].set(3);
       await component['refreshPreview']();
       fixture.detectChanges();
       return ((fixture.nativeElement as HTMLElement).textContent ?? '').replace(/\s+/g, ' ');

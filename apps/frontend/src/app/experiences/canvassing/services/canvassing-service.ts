@@ -5,6 +5,7 @@ import type {
   AssignTurfType,
   CoverageRequestType,
   CutTurfsType,
+  EnsureUniverseListType,
   FieldReportRangeType,
   RemoveCanvasserType,
   UpdateCompanionSettingsType,
@@ -81,6 +82,16 @@ export class CanvassingService extends TRPCService<unknown> {
    */
   public getCoverage(input: CoverageRequestType): Promise<Coverage> {
     return this.api.canvassing.getCoverage.query(input);
+  }
+
+  /**
+   * The smart list behind a named universe preset — created on first use,
+   * found by its exact name after that. `reused` says which happened.
+   */
+  public ensureUniverseList(
+    input: EnsureUniverseListType,
+  ): Promise<{ list_id: string; name: string; reused: boolean }> {
+    return this.api.canvassing.ensureUniverseList.mutate(input);
   }
 
   public previewCut(input: CutTurfsType): Promise<CutPreview> {

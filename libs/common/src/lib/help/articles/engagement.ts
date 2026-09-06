@@ -447,19 +447,24 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         kind: 'p',
         text: 'A **turf** is one walkable batch of doors, cut from a list you already have. You hand a turf to volunteers, they knock with the Canvass Companion on their phone, and every answer lands back in the CRM. Open [Canvassing](/canvassing) under **Field** in the sidebar. The sentence under the title sums the operation up: how many turfs exist, how many are being knocked right now, how many doors have been tried, and how many turfs still have nobody on them.',
       },
-      { kind: 'h2', id: 'cut', text: 'Cut turfs from a list' },
+      { kind: 'h2', id: 'cut', text: 'Cut new turfs' },
       {
         kind: 'steps',
         items: [
           {
-            title: 'Click **Cut turfs from a list**',
+            title: 'Pick what the outing is for',
             detail:
-              'Pick the list of people or households you want knocked. Any [list](/lists) works, and a smart list is the one to prefer because the turfs can be re-read from it later.',
+              '**Every door** is the classic persuasion canvass: survey, issues, follow-ups. **GOTV** sends volunteers to remind identified supporters to vote — quick taps instead of a survey.',
           },
           {
-            title: 'Choose doors per turf',
+            title: 'Pick whose doors',
             detail:
-              '30 for a short shift, 40 recommended, 50 for experienced canvassers, 60 for pairs. The preview does the math in the open and estimates the walk time.',
+              'Named choices, spelled out so nothing is hidden: **Everyone** (every located household in the workspace — no list), **All supporters**, **All untouched** (never knocked), or **Not canvassed in X days** — each of those is a smart list the app creates for you the first time and reuses after that. You can also pick any [list](/lists) you already built.',
+          },
+          {
+            title: 'Choose doors per turf, and on foot or by car',
+            detail:
+              '30 for a short shift, 40 recommended, 50 for experienced canvassers, 60 for pairs. The preview does the math in the open and estimates the walk time. Walking turfs group by street; driving turfs get an ordered stop list with navigation.',
           },
           {
             title: 'Confirm',

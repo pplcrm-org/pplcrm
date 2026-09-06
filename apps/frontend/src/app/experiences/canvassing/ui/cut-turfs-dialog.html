@@ -1,8 +1,118 @@
-<pc-modal-shell [open]="true" (closed)="cancel()" title="Cut turfs from a list" icon="map" [boxClass]="'max-w-lg'">
+<pc-modal-shell [open]="true" (closed)="cancel()" title="Cut new turfs" icon="map" [boxClass]="'max-w-lg'">
+  <!-- Step 1 — what the volunteers are going out to do. -->
+  @if (step() === 1) {
   <p class="-mt-3 text-sm text-base-content/60">
-    Cutting takes the addresses in a list and splits them into turfs: batches of doors that sit next to each other, so
-    one volunteer can walk a batch in an evening.
+    Cutting splits a group of addresses into turfs: batches of doors that sit next to each other, so one volunteer can
+    work a batch in an evening. First, what is this outing for?
   </p>
+
+  <div class="mt-4 grid gap-3">
+    @for (card of modeCards; track card.mode) {
+    <button
+      type="button"
+      class="flex items-start gap-3 rounded-lg border p-4 text-left transition-colors"
+      [class.border-primary]="mode() === card.mode"
+      [class.bg-primary/5]="mode() === card.mode"
+      [class.border-base-300]="mode() !== card.mode"
+      (click)="chooseMode(card.mode)"
+    >
+      <pc-icon [name]="card.icon" [size]="6" class="mt-1 shrink-0 text-primary" />
+      <span>
+        <span class="block font-medium">{{ card.label }}</span>
+        <span class="block text-sm text-base-content/60">{{ card.description }}</span>
+      </span>
+    </button>
+    }
+  </div>
+
+  <div pc-modal-footer class="flex gap-2">
+    <button type="button" class="btn btn-outline btn-accent" (click)="cancel()">Cancel</button>
+  </div>
+  }
+
+  <!-- Step 2 — whose doors. Named presets first, an existing list as the escape hatch. -->
+  @if (step() === 2) {
+  <p class="-mt-3 text-sm text-base-content/60">
+    Whose doors do we knock? Each choice is a smart list the turfs stay in step with — "Refresh doors from list" pulls
+    new matches in later without touching any knock already logged.
+  </p>
+
+  <div class="mt-4 grid gap-2">
+    @for (preset of presetChoices; track preset) {
+    <div
+      class="rounded-lg border p-3 transition-colors"
+      [class.border-primary]="universeChoice() === preset"
+      [class.bg-primary/5]="universeChoice() === preset"
+      [class.border-base-300]="universeChoice() !== preset"
+    >
+      <button type="button" class="w-full text-left" (click)="choosePreset(preset)">
+        <span class="block font-medium">{{ presetLabels[preset] }}</span>
+        <span class="block text-sm text-base-content/60">{{ presetDescriptions[preset] }}</span>
+      </button>
+      @if (preset === 'not_recent' && universeChoice() === 'not_recent') {
+      <label class="mt-2 flex items-center gap-2 text-sm">
+        Days:
+        <input
+          type="number"
+          class="input input-bordered input-sm w-20"
+          min="1"
+          max="365"
+          [value]="notRecentDays()"
+          (change)="setDays($any($event.target).value)"
+        />
+      </label>
+      }
+    </div>
+    }
+
+    <!-- An existing list -->
+    <div
+      class="rounded-lg border p-3 transition-colors"
+      [class.border-primary]="universeChoice() === 'list'"
+      [class.bg-primary/5]="universeChoice() === 'list'"
+      [class.border-base-300]="universeChoice() !== 'list'"
+    >
+      <button type="button" class="w-full text-left" (click)="chooseList()">
+        <span class="font-medium">An existing list</span>
+        <span class="block text-sm text-base-content/60">Any list you have already built — smart or static.</span>
+      </button>
+      @if (universeChoice() === 'list') {
+      <select
+        class="select select-bordered select-sm mt-2 w-full"
+        [value]="selectedListId()"
+        (change)="onListChange($any($event.target).value)"
+        aria-label="Which list"
+      >
+        <option value="" disabled>Select a list…</option>
+        @for (u of universes(); track u.id) {
+        <option [value]="u.id">
+          {{ u.name }} — {{ u.count.toLocaleString() }} {{ u.is_dynamic ? '(smart)' : '(static)' }}
+        </option>
+        }
+      </select>
+      }
+    </div>
+  </div>
+
+  <div pc-modal-footer class="flex gap-2">
+    <button type="button" class="btn btn-outline btn-accent" (click)="back()">Back</button>
+    <button
+      type="button"
+      class="btn btn-primary"
+      [disabled]="resolving() || universeChoice() == null || (universeChoice() === 'list' && !selectedListId())"
+      (click)="continueToSize()"
+    >
+      @if (resolving()) {
+      <span class="loading loading-spinner loading-sm"></span>
+      } Continue
+    </button>
+  </div>
+  }
+
+  <!-- Step 3 — size, walk or drive, preview, cut. -->
+  @if (step() === 3) { @if (universeSummary()) {
+  <p class="-mt-3 text-sm text-base-content/60">{{ universeSummary() }}</p>
+  }
 
   <!-- No boundary map is a normal starting condition, not a fault: say what happens instead and
        where to get a map, before the cut rather than after it (design §3, guide don't error). -->
@@ -17,30 +127,6 @@
     </span>
   </div>
   }
-
-  <!-- Which list to walk -->
-  <div class="form-control mt-4">
-    <label class="label" for="cut-universe">
-      <span class="label-text font-medium">Whose doors do we knock?</span>
-    </label>
-    <select
-      id="cut-universe"
-      class="select select-bordered"
-      [value]="selectedListId()"
-      (change)="onListChange($any($event.target).value)"
-    >
-      <option value="" disabled>Select a list…</option>
-      @for (u of universes(); track u.id) {
-      <option [value]="u.id">
-        {{ u.name }} — {{ u.count.toLocaleString() }} {{ u.is_dynamic ? '(smart)' : '(static)' }}
-      </option>
-      }
-    </select>
-    <span class="label mt-1 text-xs text-base-content/50">
-      Pick a smart list and the turfs stay in step with it: when the list changes, "Refresh doors from list" pulls the
-      new addresses in without touching any knock already logged.
-    </span>
-  </div>
 
   <!-- Doors per turf -->
   <div class="form-control mt-4">
@@ -62,13 +148,35 @@
     <span class="mt-2 text-xs text-base-content/50">{{ timeHelper() }}</span>
   </div>
 
+  <!-- Walk or drive -->
+  <div class="form-control mt-4">
+    <span class="label-text font-medium">On foot or by car?</span>
+    <div class="mt-2 flex gap-2">
+      @for (t of travelModes; track t) {
+      <button
+        type="button"
+        class="btn btn-sm"
+        [class.btn-primary]="travel() === t"
+        [class.btn-outline]="travel() !== t"
+        [class.btn-accent]="travel() !== t"
+        (click)="setTravel(t)"
+      >
+        {{ travelLabels[t] }}
+      </button>
+      }
+    </div>
+    <span class="mt-2 text-xs text-base-content/50">
+      Walking turfs group by street, so a volunteer works one side at a time. Driving turfs get an ordered stop list
+      with navigation.
+    </span>
+  </div>
+
   <!-- Preview -->
   @if (preview(); as p) {
   <div class="mt-4 rounded-lg border border-base-300 bg-base-200/40 p-4 text-sm">
     @if (p.doors > 0) {
     <p>
-      <span class="font-medium">{{ (selectedUniverse()?.count ?? p.doors).toLocaleString() }} people</span>
-      · ~{{ p.doors.toLocaleString() }} doors →
+      ~{{ p.doors.toLocaleString() }} doors →
       <span class="font-medium">{{ p.turfCount }} turfs of ~{{ p.avgDoorsPerTurf }} doors each</span>
     </p>
     <!-- The boundary promise comes from THIS preview's own `bounded` flag, resolved by the server
@@ -88,7 +196,7 @@
     </p>
     } } @else {
     <p class="text-base-content/60">
-      Nobody in this list has an address we could place on the map yet, so there is nothing to cut. Addresses are
+      Nobody in this universe has an address we could place on the map yet, so there is nothing to cut. Addresses are
       located automatically shortly after they are added.
     </p>
     }
@@ -96,7 +204,7 @@
   }
 
   <div pc-modal-footer class="flex gap-2">
-    <button type="button" class="btn btn-outline btn-accent" (click)="cancel()">Cancel</button>
+    <button type="button" class="btn btn-outline btn-accent" (click)="back()">Back</button>
     <button
       type="button"
       class="btn btn-primary"
@@ -108,4 +216,5 @@
       } Cut {{ preview()?.turfCount ?? 0 }} turfs
     </button>
   </div>
+  }
 </pc-modal-shell>

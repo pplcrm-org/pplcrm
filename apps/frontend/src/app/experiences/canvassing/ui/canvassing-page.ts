@@ -108,9 +108,9 @@ const COVERAGE_SETTLE_MS = 350;
 /** The three steps of the whole feature, shown until the first turfs exist. */
 const GETTING_STARTED: { title: string; detail: string }[] = [
   {
-    title: 'Cut turfs from a list',
+    title: 'Cut new turfs',
     detail:
-      'Pick a list of people or households. Their addresses are split into batches of roughly 40 doors that sit next to each other, and no turf crosses a boundary line on the map your campaign uses.',
+      'Say what the outing is for (every door, or GOTV), pick whose doors — Everyone, All supporters, All untouched, Not canvassed in X days, or any list you built — and their addresses are split into batches of roughly 40 doors that sit next to each other, never crossing a boundary line on the map your campaign uses.',
   },
   {
     title: 'Add canvassers',
