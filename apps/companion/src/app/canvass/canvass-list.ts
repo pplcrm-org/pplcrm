@@ -31,8 +31,8 @@ const REFRESH_MS = 60_000;
 
 type ListFilter = 'all' | 'remaining' | 'visited';
 
-/** The one-tap outcomes a walk-list row offers; which three depends on the turf's mode. */
-type QuickActionId = 'supporter' | 'non_supporter' | 'reminded' | 'already_voted' | 'not_home';
+/** The one-tap outcomes a walk-list row offers; which set depends on the turf's mode. */
+type QuickActionId = 'supporter' | 'undecided' | 'non_supporter' | 'reminded' | 'already_voted' | 'not_home';
 
 /**
  * The walk list (spec §3.3): the street you are on, its progress, then its doors in walk
@@ -240,7 +240,9 @@ type QuickActionId = 'supporter' | 'non_supporter' | 'reminded' | 'already_voted
                    doors end in one tap, and the detail screen is for the uncommon work.
                    Gone once the door is attempted — the job the buttons do is done. -->
               @if (showQuickActions(entry.household)) {
-                <div class="flex items-center gap-2 border-t border-base-200 p-2">
+                <!-- flex-wrap: four labels on a phone-width row; a long one drops to a
+                     second line of buttons rather than truncating mid-word. -->
+                <div class="flex flex-wrap items-center gap-2 border-t border-base-200 p-2">
                   @for (action of quickActions(); track action.id) {
                     <button
                       type="button"
@@ -335,6 +337,8 @@ export class CanvassList {
    * GOTV walk records the reminder, the ballot already cast, or the miss. The words are
    * the ask, not the storage: "Reminded" is stored as the ordinary supporter survey and
    * "Already voted" as the already_voted one — no new vocabulary anywhere downstream.
+   * "Undecided" is on the persuasion row because it is the commonest answer after a miss
+   * (operator, 2026-09-07) — hiding it behind the door screen taxed every second door.
    */
   protected readonly quickActions = computed<{ id: QuickActionId; label: string }[]>(() =>
     this.store.mode() === 'gotv'
@@ -345,6 +349,7 @@ export class CanvassList {
         ]
       : [
           { id: 'supporter', label: 'Supporter' },
+          { id: 'undecided', label: 'Undecided' },
           { id: 'non_supporter', label: 'Non-supporter' },
           { id: 'not_home', label: 'Not home' },
         ],
@@ -364,6 +369,10 @@ export class CanvassList {
       case 'supporter':
         this.store.quickSurvey(h.id, this.quickTargetId(h), 'supporter');
         this.alerts.showSuccess('Marked supporter');
+        return;
+      case 'undecided':
+        this.store.quickSurvey(h.id, this.quickTargetId(h), 'undecided');
+        this.alerts.showSuccess('Marked undecided');
         return;
       case 'non_supporter':
         this.store.quickSurvey(h.id, this.quickTargetId(h), 'non_supporter');
