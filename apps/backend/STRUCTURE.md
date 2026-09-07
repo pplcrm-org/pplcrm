@@ -20,6 +20,7 @@ apps/
           2026-08-22-donor-portal.ts
           2026-08-28-zapier-rest-hooks.ts
           2026-09-06-turf-modes-and-request-purpose.ts
+          2026-09-07-delivery-request-turf-pointer.ts
           schema.sql
         config/
           email-folders.config.ts
