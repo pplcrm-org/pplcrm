@@ -16,6 +16,7 @@ import type {
   SetDeliveryRequestStatusType,
   SetDeliveryRouteStatusType,
   StopActionType,
+  TurfDeliveryPurpose,
   UpdateDeliveryRequestType,
   UpdateDeliveryRouteType,
   getAllOptionsType,
@@ -41,6 +42,10 @@ import { logger } from '../../logger';
 import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
 import { CompanionAccessController } from '../companion-access/controller';
+// Repos only, never CanvassingController — the canvassing controller imports THIS one,
+// and the repos import nothing above the base layer, so this direction stays cycle-free.
+import { TurfAssignmentsRepo } from '../canvassing/repositories/turf-assignments.repo';
+import { TurfHouseholdsRepo } from '../canvassing/repositories/turf-households.repo';
 import { WorkflowsController } from '../workflows/controller';
 import { DeliveryRequestsRepo } from './repositories/delivery-requests.repo';
 import { DeliveryRouteStopsRepo } from './repositories/delivery-route-stops.repo';
@@ -138,6 +143,8 @@ function isOpenHouseholdConflict(err: unknown): boolean {
 
 export class DeliveriesController {
   private readonly requestsRepo = new DeliveryRequestsRepo();
+  private readonly turfAssignments = new TurfAssignmentsRepo();
+  private readonly turfHouseholds = new TurfHouseholdsRepo();
   private readonly campaignsRepo = new CampaignsRepo();
   private readonly companionAccess = new CompanionAccessController();
   private readonly routesRepo = new DeliveryRoutesRepo();
@@ -155,6 +162,38 @@ export class DeliveriesController {
 
   public getReadyCount(tenant: string) {
     return this.requestsRepo.getReadyCount(tenant);
+  }
+
+  // ---- The delivery-turf pool (pointer-column design, 2026-09-06) ---------
+  // Called by the canvassing controller; thin pass-throughs so the pool queries
+  // live with every other delivery_requests query.
+
+  /** Households with an approved, matching-purpose request nothing is carrying yet. */
+  public getPoolHouseholdIds(input: { tenant_id: string; campaign_id: string; purpose: TurfDeliveryPurpose }) {
+    return this.requestsRepo.getPoolHouseholdIds(input);
+  }
+
+  /** Claim the pool requests behind a cut's doors; returns the households actually won. */
+  public claimRequestsForTurf(
+    trx: Transaction<Models>,
+    input: {
+      tenant_id: string;
+      campaign_id: string;
+      turf_id: string;
+      household_ids: string[];
+      purpose: TurfDeliveryPurpose;
+      user_id: string;
+    },
+  ) {
+    return this.requestsRepo.claimForTurf(trx, input);
+  }
+
+  /** Retiring a delivery turf: its undelivered requests fall back into the pool. */
+  public releaseTurfPointers(
+    input: { tenant_id: string; turf_id: string; user_id: string },
+    trx?: Transaction<Models>,
+  ) {
+    return this.requestsRepo.releaseTurfPointers(input, trx);
   }
 
   /** Yard-sign standing for one household in one campaign context (household/person pages). */
@@ -320,11 +359,35 @@ export class DeliveriesController {
             .execute();
           newlyDelivered = notYet.map((r) => String(r.id));
         }
+        // Declining (or reopening to 'new') a request a delivery turf is carrying: clear
+        // the pointer — one of its two clear sites — and take the door off the volunteer's
+        // list, so nobody drives to deliver a task the office just cancelled. Knock history
+        // is kept; removeDoors only unlinks the household from the turf. A manual staff
+        // 'delivered' deliberately does neither: the pointer stays as provenance and the
+        // door stays on the turf, where the companion shows it as already served.
+        if (input.status === 'declined' || input.status === 'new') {
+          const carried = await trx
+            .selectFrom('delivery_requests')
+            .select(['turf_id', 'household_id'])
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('id', 'in', directIds)
+            .where('turf_id', 'is not', null)
+            .execute();
+          const byTurf = new Map<string, string[]>();
+          for (const r of carried) {
+            const turfId = String(r.turf_id);
+            byTurf.set(turfId, [...(byTurf.get(turfId) ?? []), String(r.household_id)]);
+          }
+          for (const [turf_id, household_ids] of byTurf) {
+            await this.turfHouseholds.removeDoors({ tenant_id: auth.tenant_id, turf_id, household_ids }, trx);
+          }
+        }
         await trx
           .updateTable('delivery_requests')
           .set({
             status: input.status,
             ...(input.status === 'delivered' ? { skip_reason: null } : {}),
+            ...(input.status === 'declined' || input.status === 'new' ? { turf_id: null } : {}),
             updatedby_id: auth.user_id,
             updated_at: new Date(),
           })
@@ -1007,6 +1070,37 @@ export class DeliveriesController {
       await this.cancelRouteInTrx(trx, auth, String(route.id));
     }
 
+    // The turf-era sibling of the route cancellation above: an archived (read-only)
+    // campaign must not keep volunteers out delivering for it. Retire its delivery
+    // turfs, revoke their links, and drop their undelivered requests back into the
+    // pool — where the blanket decline below then closes them like every other open
+    // request of the campaign.
+    const deliveryTurfs = await trx
+      .selectFrom('turfs')
+      .select(['id'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('campaign_id', '=', campaignId)
+      .where('mode', '=', 'delivery')
+      .where('status', '!=', 'retired')
+      .execute();
+    for (const turf of deliveryTurfs) {
+      const turfId = String(turf.id);
+      await this.turfAssignments.revokeForTurf(
+        { tenant_id: auth.tenant_id, turf_id: turfId, user_id: auth.user_id },
+        trx,
+      );
+      await this.requestsRepo.releaseTurfPointers(
+        { tenant_id: auth.tenant_id, turf_id: turfId, user_id: auth.user_id },
+        trx,
+      );
+      await trx
+        .updateTable('turfs')
+        .set({ status: 'retired', updatedby_id: auth.user_id, updated_at: new Date() })
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('id', '=', turfId)
+        .execute();
+    }
+
     // Stray pending stops: eligibility doesn't filter by campaign, so a request of this campaign
     // can sit on a route named after another campaign. Skip those stops without touching the route.
     const openRequestIds = (
@@ -1031,7 +1125,9 @@ export class DeliveriesController {
 
     await trx
       .updateTable('delivery_requests')
-      .set({ status: 'declined', updatedby_id: auth.user_id, updated_at: new Date() })
+      // turf_id cleared as a belt over the per-turf release above — a declined request
+      // must never read as "out for delivery" whatever carried it.
+      .set({ status: 'declined', turf_id: null, updatedby_id: auth.user_id, updated_at: new Date() })
       .where('tenant_id', '=', auth.tenant_id)
       .where('id', 'in', openRequestIds)
       .execute();

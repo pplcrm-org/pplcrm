@@ -332,6 +332,8 @@ export {
   DELIVERY_PURPOSES,
   DELIVERY_PURPOSE_LABELS,
   DELIVERY_PURPOSE_NOUNS,
+  TURF_DELIVERY_PURPOSES,
+  TURF_DELIVERY_PURPOSE_LABELS,
   DELIVERY_SKIP_REASONS,
   DONATION_METHODS,
   DONATION_METHOD_LABELS,
@@ -705,6 +707,7 @@ export type {
   DeliverySource,
   DeliverySkipReason,
   DeliveryPurpose,
+  TurfDeliveryPurpose,
 } from './lib/schemas/deliveries.schema';
 
 export { debounce, escapeHtml, sleep, slugifyHandle, slugifyRecordName, RESERVED_SUBDOMAINS } from './lib/utils';

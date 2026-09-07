@@ -31,6 +31,20 @@ export const DELIVERY_PURPOSE_NOUNS: Record<DeliveryPurpose, string> = {
   flyer: 'flyer-drop request',
 };
 
+/**
+ * What a delivery outing (turf, mode 'delivery') carries — the cut wizard's choice and
+ * the stored `turfs.delivery_purpose`. 'both' is a real option, not a wildcard default:
+ * a volunteer carrying signs AND flyers serves either kind of open request at a door.
+ */
+export const TURF_DELIVERY_PURPOSES = ['yard_sign', 'flyer', 'both'] as const;
+export type TurfDeliveryPurpose = (typeof TURF_DELIVERY_PURPOSES)[number];
+
+export const TURF_DELIVERY_PURPOSE_LABELS: Record<TurfDeliveryPurpose, string> = {
+  yard_sign: 'Yard signs',
+  flyer: 'Flyers',
+  both: 'Signs and flyers',
+};
+
 // The four failure reasons a volunteer can pick (spec §4.4). "Skip for now" (defer) is NOT a
 // reason — it keeps the stop pending and moves it to the end of the route.
 export const DELIVERY_SKIP_REASONS = ['No safe spot', 'Wrong address', 'Resident declined', 'Other'] as const;

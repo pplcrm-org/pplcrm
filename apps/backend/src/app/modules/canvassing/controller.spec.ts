@@ -6,6 +6,7 @@ import { COVERAGE_MAX_DOORS } from '@common';
 import { BaseRepository } from '../../lib/base.repo';
 import { purgeCanvassPingsForTenant } from '../../lib/jobs/handlers/canvass-live.handlers';
 import { hashToken } from '../../lib/token-hash';
+import { DeliveriesController } from '../deliveries/controller';
 import { CanvassingController, type CoverageFull } from './controller';
 import { resolveTurfBoundary } from './lib/turf-boundary';
 
@@ -2306,6 +2307,158 @@ describe('CanvassingController', () => {
       if (!first) throw new Error('expected a turf');
       const refresh = await controller.refreshFromList(auth, first.id);
       expect(refresh).toEqual({ added: 0, removed: 0, boundary_map_missing: false });
+    });
+  });
+
+  describe('delivery turfs (the pointer column)', () => {
+    const deliveries = new DeliveriesController();
+
+    /** One approved request per given household, in the seed campaign. */
+    async function seedApproved(householdIds: string[], purpose: 'yard_sign' | 'flyer' = 'yard_sign'): Promise<void> {
+      for (const hid of householdIds) {
+        await db
+          .insertInto('delivery_requests')
+          .values({
+            tenant_id: s.tenantId,
+            campaign_id: s.campaignId,
+            household_id: hid,
+            status: 'approved',
+            source: 'manual',
+            purpose,
+            createdby_id: s.userId,
+            updatedby_id: s.userId,
+          })
+          .execute();
+      }
+    }
+
+    async function requestRows(): Promise<{ household_id: string; status: string; turf_id: string | null }[]> {
+      const rows = await db
+        .selectFrom('delivery_requests')
+        .select(['household_id', 'status', 'turf_id'])
+        .where('tenant_id', '=', s.tenantId)
+        .execute();
+      return rows.map((r) => ({
+        household_id: String(r.household_id),
+        status: String(r.status),
+        turf_id: r.turf_id == null ? null : String(r.turf_id),
+      }));
+    }
+
+    it('cuts from the approved pool, claims every request, and empties the pool', async () => {
+      const pool = s.householdIds.slice(0, 6);
+      await seedApproved(pool);
+      // A declined request is not in the pool and must stay unclaimed.
+      const declinedHousehold = s.householdIds[6];
+      if (!declinedHousehold) throw new Error('expected a seventh household');
+      await db
+        .insertInto('delivery_requests')
+        .values({
+          tenant_id: s.tenantId,
+          campaign_id: s.campaignId,
+          household_id: declinedHousehold,
+          status: 'declined',
+          source: 'manual',
+          purpose: 'yard_sign',
+          createdby_id: s.userId,
+          updatedby_id: s.userId,
+        })
+        .execute();
+
+      const res = await controller.cutTurfs(auth, { doors_per_turf: 20, mode: 'delivery', travel: 'drive' });
+      expect(res.created).toBeGreaterThan(0);
+
+      const rows = await requestRows();
+      for (const hid of pool) {
+        expect(rows.find((r) => r.household_id === hid)?.turf_id).not.toBeNull();
+      }
+      expect(rows.find((r) => r.household_id === declinedHousehold)?.turf_id).toBeNull();
+
+      // The turfs carry mode, purpose, and no list; their doors are exactly the pool.
+      const turfs = await controller.getTurfs(auth);
+      expect(turfs.every((t) => t.mode === 'delivery' && t.list_id === null)).toBe(true);
+      expect(turfs.reduce((n, t) => n + t.door_count, 0)).toBe(pool.length);
+
+      // Everything claimed: nothing is ready to plan, and a second cut finds nothing.
+      expect(await deliveries.getReadyCount(s.tenantId)).toBe(0);
+      await expect(controller.cutTurfs(auth, { doors_per_turf: 20, mode: 'delivery' })).rejects.toThrow(
+        /No approved requests/,
+      );
+    });
+
+    it('a purpose-filtered cut leaves the other kind in the pool', async () => {
+      const signHousehold = s.householdIds[0];
+      const flyerHousehold = s.householdIds[1];
+      if (!signHousehold || !flyerHousehold) throw new Error('expected seeded households');
+      await seedApproved([signHousehold], 'yard_sign');
+      await seedApproved([flyerHousehold], 'flyer');
+
+      await controller.cutTurfs(auth, { doors_per_turf: 20, mode: 'delivery', delivery_purpose: 'yard_sign' });
+
+      const rows = await requestRows();
+      expect(rows.find((r) => r.household_id === signHousehold)?.turf_id).not.toBeNull();
+      expect(rows.find((r) => r.household_id === flyerHousehold)?.turf_id).toBeNull();
+    });
+
+    it('declining a carried request clears the pointer and takes the door off the turf', async () => {
+      const pool = s.householdIds.slice(0, 4);
+      await seedApproved(pool);
+      await controller.cutTurfs(auth, { doors_per_turf: 20, mode: 'delivery' });
+      const [turf] = await controller.getTurfs(auth);
+      if (!turf) throw new Error('expected a turf');
+
+      const target = (await requestRows()).find((r) => r.turf_id === turf.id);
+      if (!target) throw new Error('expected a carried request');
+      const targetId = String(
+        (
+          await db
+            .selectFrom('delivery_requests')
+            .select('id')
+            .where('tenant_id', '=', s.tenantId)
+            .where('household_id', '=', target.household_id)
+            .executeTakeFirstOrThrow()
+        ).id,
+      );
+
+      await deliveries.setRequestStatus(auth, { ids: [targetId], status: 'declined' });
+
+      const after = (await requestRows()).find((r) => r.household_id === target.household_id);
+      expect(after?.status).toBe('declined');
+      expect(after?.turf_id).toBeNull();
+      const detail = await controller.getTurfDetail(auth, turf.id);
+      expect(detail.doors.some((d) => d.household_id === target.household_id)).toBe(false);
+    });
+
+    it('retiring a delivery turf hands its undelivered requests back to the pool; delivered keep provenance', async () => {
+      const pool = s.householdIds.slice(0, 3);
+      await seedApproved(pool);
+      await controller.cutTurfs(auth, { doors_per_turf: 20, mode: 'delivery' });
+      // The seed's doors span two boundary areas, so the cut can make several turfs.
+      const turfs = await controller.getTurfs(auth);
+      expect(turfs.length).toBeGreaterThan(0);
+
+      // One of the three gets delivered while out.
+      const deliveredHousehold = pool[0];
+      if (!deliveredHousehold) throw new Error('expected a household');
+      await db
+        .updateTable('delivery_requests')
+        .set({ status: 'delivered' })
+        .where('tenant_id', '=', s.tenantId)
+        .where('household_id', '=', deliveredHousehold)
+        .execute();
+
+      for (const turf of turfs) await controller.retireTurf(auth, turf.id);
+
+      const rows = await requestRows();
+      const delivered = rows.find((r) => r.household_id === deliveredHousehold);
+      expect(delivered?.status).toBe('delivered');
+      expect(delivered?.turf_id).not.toBeNull(); // provenance kept
+      for (const hid of pool.slice(1)) {
+        const r = rows.find((row) => row.household_id === hid);
+        expect(r?.status).toBe('approved');
+        expect(r?.turf_id).toBeNull(); // back in the pool
+      }
+      expect(await deliveries.getReadyCount(s.tenantId)).toBe(pool.length - 1);
     });
   });
 });

@@ -26,6 +26,7 @@ import type {
   MapViewportType,
   KnockResponse,
   SupportLevel,
+  TurfDeliveryPurpose,
   TurfMode,
   TurfTravel,
   UpdateCompanionSettingsType,
@@ -1336,8 +1337,34 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     // The preview must be cut against the same map the real cut will use, or it can promise a
     // turf count the cut then contradicts.
     const boundary = await this.turfBoundaryForCut(auth);
-    const doors = await this.resolveUniverseDoors(auth, input.list_id ?? null, boundary.set_id);
+    const doors =
+      (input.mode ?? 'canvass') === 'delivery'
+        ? await this.resolveDeliveryPoolDoors(auth, input.delivery_purpose ?? 'both', boundary.set_id)
+        : await this.resolveUniverseDoors(auth, input.list_id ?? null, boundary.set_id);
     return { ...previewCutPlan(doors, input.doors_per_turf), bounded: boundary.set_id != null };
+  }
+
+  /**
+   * The delivery universe: households with an approved, matching-purpose request nothing
+   * is carrying (turf pointer NULL, no pending route stop), in the campaign this cut is
+   * for. A list never applies — the request pool IS the universe of mode 'delivery'.
+   */
+  private async resolveDeliveryPoolDoors(
+    auth: IAuthKeyPayload,
+    purpose: TurfDeliveryPurpose,
+    boundarySetId: string | null,
+  ): Promise<DoorPoint[]> {
+    const campaignId = await this.campaignsRepo.resolveForWrite({ tenant_id: auth.tenant_id });
+    const householdIds = await this.deliveries.getPoolHouseholdIds({
+      tenant_id: auth.tenant_id,
+      campaign_id: campaignId,
+      purpose,
+    });
+    return this.turfsRepo().getHouseholdsGeo({
+      tenant_id: auth.tenant_id,
+      household_ids: householdIds,
+      boundary_set_id: boundarySetId,
+    });
   }
 
   public async cutTurfs(auth: IAuthKeyPayload, input: CutTurfsType): Promise<{ created: number; unplaced: number }> {
@@ -1348,13 +1375,20 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       campaign_id: campaignId,
     });
 
-    const doors = await this.resolveUniverseDoors(auth, input.list_id ?? null, boundary.set_id);
+    const mode = input.mode ?? 'canvass';
+    const deliveryPurpose = input.delivery_purpose ?? 'both';
+    const doors =
+      mode === 'delivery'
+        ? await this.resolveDeliveryPoolDoors(auth, deliveryPurpose, boundary.set_id)
+        : await this.resolveUniverseDoors(auth, input.list_id ?? null, boundary.set_id);
     const plan = clusterTurfs(doors, input.doors_per_turf);
     if (plan.turfs.length === 0) {
       throw new BadRequestError(
-        input.list_id != null
-          ? 'No geocoded doors in that list yet. Turfs are cut from located households.'
-          : 'No geocoded households in the workspace yet. Turfs are cut from located households.',
+        mode === 'delivery'
+          ? 'No approved requests with a located address are waiting. Approve some on the requests list first.'
+          : input.list_id != null
+            ? 'No geocoded doors in that list yet. Turfs are cut from located households.'
+            : 'No geocoded households in the workspace yet. Turfs are cut from located households.',
       );
     }
 
@@ -1376,9 +1410,11 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           campaign_id: campaignId,
           name: `Turf ${n}`,
           status: 'draft',
-          mode: input.mode ?? 'canvass',
+          mode,
           travel,
-          list_id: input.list_id ?? null,
+          delivery_purpose: mode === 'delivery' ? deliveryPurpose : null,
+          // The pool is the universe of a delivery cut; a list never applies there.
+          list_id: mode === 'delivery' ? null : (input.list_id ?? null),
           target_doors: input.doors_per_turf,
           centroid_lat: cluster.centroid_lat,
           centroid_lng: cluster.centroid_lng,
@@ -1403,7 +1439,22 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         if (!turfId) throw new NotFoundError('Failed to create turf');
         // addDoors stores walk_order from the order it is handed: the walker's street
         // sweep as the engine produced it, or a driving sequence for a drive turf.
-        const householdIds = travel === 'drive' ? this.orderClusterForDrive(cluster, geoById) : cluster.households;
+        let householdIds = travel === 'drive' ? this.orderClusterForDrive(cluster, geoById) : cluster.households;
+        if (mode === 'delivery') {
+          // Claim the pool requests behind these doors. The `WHERE turf_id IS NULL`
+          // guard inside the claim is the double-booking protection — a door whose
+          // requests a concurrent cut already took comes back unclaimed and is
+          // dropped here rather than sent out twice.
+          const claimed = await this.deliveries.claimRequestsForTurf(trx, {
+            tenant_id: auth.tenant_id,
+            campaign_id: campaignId,
+            turf_id: turfId,
+            household_ids: cluster.households,
+            purpose: deliveryPurpose,
+            user_id: auth.user_id,
+          });
+          householdIds = householdIds.filter((h) => claimed.has(h));
+        }
         await this.turfHouseholds.addDoors(
           { tenant_id: auth.tenant_id, turf_id: turfId, household_ids: householdIds, user_id: auth.user_id },
           trx,
@@ -1643,6 +1694,14 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           { tenant_id: auth.tenant_id, turf_id: turfId, user_id: auth.user_id },
           trx,
         );
+        // A retiring delivery outing hands its undelivered requests back to the pool —
+        // one of the turf pointer's two clear sites (the other is request decline).
+        if (turf.mode === 'delivery') {
+          await this.deliveries.releaseTurfPointers(
+            { tenant_id: auth.tenant_id, turf_id: turfId, user_id: auth.user_id },
+            trx,
+          );
+        }
         await this.turfsRepo().update(
           {
             tenant_id: auth.tenant_id,

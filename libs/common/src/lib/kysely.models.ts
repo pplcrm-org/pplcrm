@@ -582,6 +582,14 @@ export interface DeliveryRequests extends RecordType {
    * is scoped per purpose: one open task of each kind per household, tenant-wide.
    */
   purpose: Generated<'yard_sign' | 'flyer'>;
+  /**
+   * The active delivery outing (turf) currently carrying this request — the stored
+   * "out for delivery" fact (pointer-column design, 2026-09-06). Set by the cut with a
+   * `WHERE turf_id IS NULL` claim so two cuts can never take the same household; cleared
+   * when the turf retires or the request is declined; KEPT on delivered requests as
+   * provenance. FK is ON DELETE SET NULL.
+   */
+  turf_id: string | null;
   notes: string | null;
   skip_reason: string | null;
 }
@@ -642,6 +650,12 @@ interface Turfs extends RecordType {
   mode: Generated<'canvass' | 'gotv' | 'delivery'>;
   /** How the volunteer moves — 'walk' (street-grouped list) | 'drive' (ordered route view). */
   travel: Generated<'walk' | 'drive'>;
+  /**
+   * What a delivery outing carries — 'yard_sign' | 'flyer' | 'both'; NULL on every
+   * non-delivery turf. Stored so refresh-from-pool knows what to pull even after every
+   * pointed request is delivered.
+   */
+  delivery_purpose: 'yard_sign' | 'flyer' | 'both' | null;
   list_id: string | null;
   target_doors: number | null;
   centroid_lat: number | null;

@@ -3,6 +3,7 @@ import { sql } from 'kysely';
 
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { chunk } from '../../../lib/chunk';
 import { resolvePageWindow } from '../../../lib/paging';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 
@@ -143,6 +144,8 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
     person_name: string | null;
     route_id: string | null;
     route_name: string | null;
+    turf_id: string | null;
+    turf_name: string | null;
   } | null> {
     const db = trx ?? this.db;
     const row = await db
@@ -155,6 +158,11 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
           .on('active_stop.status', '=', 'pending'),
       )
       .leftJoin('delivery_routes as rt', 'rt.id', 'active_stop.route_id')
+      // The delivery outing carrying this request (pointer-column design) — the turf-era
+      // sibling of the pending-stop join above. Only an unretired turf reads as "out".
+      .leftJoin('turfs as tf', (join) =>
+        join.onRef('tf.id', '=', 'dr.turf_id').on('tf.tenant_id', '=', tenantId).on('tf.status', '!=', 'retired'),
+      )
       .where('dr.tenant_id', '=', tenantId)
       .where('dr.household_id', '=', householdId)
       .where('dr.campaign_id', '=', campaignId)
@@ -172,6 +180,8 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
         sql<string>`NULLIF(TRIM(COALESCE(p.first_name, '') || ' ' || COALESCE(p.last_name, '')), '')`.as('person_name'),
         'active_stop.route_id as route_id',
         'rt.name as route_name',
+        'tf.id as turf_id',
+        'tf.name as turf_name',
       ])
       .orderBy('dr.updated_at', 'desc')
       .limit(1)
@@ -188,6 +198,8 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
       person_name: row.person_name ?? null,
       route_id: row.route_id != null ? String(row.route_id) : null,
       route_name: row.route_name ?? null,
+      turf_id: row.turf_id != null ? String(row.turf_id) : null,
+      turf_name: row.turf_name ?? null,
     };
   }
 
@@ -223,6 +235,95 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
     };
   }
 
+  /**
+   * The delivery-turf pool: distinct households with an approved, matching-purpose
+   * request that nothing is carrying — not pointed at a turf, not on a pending route
+   * stop. Ungeocoded households are included on purpose: the cut preview owes the
+   * organizer "N requests have no map position yet" rather than silently shrinking.
+   */
+  public async getPoolHouseholdIds(
+    input: { tenant_id: string; campaign_id: string; purpose: 'yard_sign' | 'flyer' | 'both' },
+    trx?: Transaction<Models>,
+  ): Promise<string[]> {
+    const db = trx ?? this.db;
+    const rows = await db
+      .selectFrom('delivery_requests as dr')
+      .where('dr.tenant_id', '=', input.tenant_id)
+      .where('dr.campaign_id', '=', input.campaign_id)
+      .where('dr.status', '=', 'approved')
+      .$if(input.purpose !== 'both', (qb) => qb.where('dr.purpose', '=', input.purpose as 'yard_sign' | 'flyer'))
+      .where('dr.turf_id', 'is', null)
+      .where(({ not, exists, selectFrom }) =>
+        not(
+          exists(
+            selectFrom('delivery_route_stops as s')
+              .select('s.id')
+              .whereRef('s.request_id', '=', 'dr.id')
+              .where('s.tenant_id', '=', input.tenant_id)
+              .where('s.status', '=', 'pending'),
+          ),
+        ),
+      )
+      .select('dr.household_id')
+      .distinct()
+      .execute();
+    return rows.map((r) => String(r.household_id));
+  }
+
+  /**
+   * Claim the pool requests behind a cut's doors for one delivery turf. The
+   * `turf_id IS NULL` guard is the whole race story: two concurrent cuts both pass the
+   * pool read, but only one UPDATE takes each request — the loser's doors come back
+   * absent from the returned set and the caller drops them from its turf.
+   */
+  public async claimForTurf(
+    trx: Transaction<Models>,
+    input: {
+      tenant_id: string;
+      campaign_id: string;
+      turf_id: string;
+      household_ids: string[];
+      purpose: 'yard_sign' | 'flyer' | 'both';
+      user_id: string;
+    },
+  ): Promise<Set<string>> {
+    const claimed = new Set<string>();
+    for (const ids of chunk(input.household_ids)) {
+      const rows = await trx
+        .updateTable('delivery_requests')
+        .set({ turf_id: input.turf_id, updatedby_id: input.user_id, updated_at: new Date() })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('campaign_id', '=', input.campaign_id)
+        .where('household_id', 'in', ids)
+        .where('status', '=', 'approved')
+        .$if(input.purpose !== 'both', (qb) => qb.where('purpose', '=', input.purpose as 'yard_sign' | 'flyer'))
+        .where('turf_id', 'is', null)
+        .returning('household_id')
+        .execute();
+      for (const r of rows) claimed.add(String(r.household_id));
+    }
+    return claimed;
+  }
+
+  /**
+   * Retiring a delivery turf drops its undelivered requests back into the pool. One of
+   * the two pointer-clear sites (the other is decline); delivered requests keep the
+   * pointer as provenance.
+   */
+  public async releaseTurfPointers(
+    input: { tenant_id: string; turf_id: string; user_id: string },
+    trx?: Transaction<Models>,
+  ): Promise<void> {
+    const db = trx ?? this.db;
+    await db
+      .updateTable('delivery_requests')
+      .set({ turf_id: null, updatedby_id: input.user_id, updated_at: new Date() })
+      .where('tenant_id', '=', input.tenant_id)
+      .where('turf_id', '=', input.turf_id)
+      .where('status', 'in', ['new', 'approved'])
+      .execute();
+  }
+
   /** Tab counts for the requests grid (spec §4.1): Open = new + approved. */
   public async getStatusCounts(tenantId: string, trx?: Transaction<Models>): Promise<Record<string, number>> {
     const db = trx ?? this.db;
@@ -252,6 +353,8 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
       .innerJoin('households as h', 'h.id', 'dr.household_id')
       .where('dr.tenant_id', '=', tenantId)
       .where('dr.status', '=', 'approved')
+      // Out with a delivery turf — spoken for, exactly like a pending stop.
+      .where('dr.turf_id', 'is', null)
       .where('h.geocoding_status', '=', 'success')
       .where('h.lat', 'is not', null)
       .where('h.lng', 'is not', null)
@@ -284,6 +387,8 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
       .leftJoin('persons as p', 'p.id', 'dr.person_id')
       .where('dr.tenant_id', '=', tenantId)
       .where('dr.status', '=', 'approved')
+      // Out with a delivery turf — the route planner must not double-book it.
+      .where('dr.turf_id', 'is', null)
       .where('h.geocoding_status', '=', 'success')
       .where('h.lat', 'is not', null)
       .where('h.lng', 'is not', null)
@@ -333,6 +438,8 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
       .where('dr.tenant_id', '=', tenantId)
       .where('dr.id', 'in', ids)
       .where('dr.status', '=', 'approved')
+      // Claimed by a delivery turf between preview and commit — no longer eligible.
+      .where('dr.turf_id', 'is', null)
       .where('h.geocoding_status', '=', 'success')
       .where('h.lat', 'is not', null)
       .where('h.lng', 'is not', null)

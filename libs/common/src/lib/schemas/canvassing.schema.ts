@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import type { SupportLevel, VotingStatus } from './campaigns.schema';
 import { LIST_BACKED_UNIVERSE_PRESETS } from '../canvass-universes';
+import { TURF_DELIVERY_PURPOSES } from './deliveries.schema';
 import { MapViewportObj, idSchema, nameSchema, notesSchema } from './core.schema';
 
 /**
@@ -162,6 +163,11 @@ export const CutTurfsObj = z.object({
   doors_per_turf: z.number().int().min(5).max(500),
   mode: z.enum(TURF_MODES).optional(),
   travel: z.enum(TURF_TRAVEL_MODES).optional(),
+  /**
+   * Delivery mode only: what the outing carries. The universe is then the approved,
+   * unclaimed requests of that kind — `list_id` is ignored. Defaults to 'both'.
+   */
+  delivery_purpose: z.enum(TURF_DELIVERY_PURPOSES).optional(),
 });
 
 /**
