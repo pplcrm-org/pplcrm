@@ -108,6 +108,7 @@ apps/
               deliveries-requests-service.ts
               deliveries-routes-service.ts
             ui/
+              add-from-list-dialog.ts
               assign-volunteer-dialog.html
               assign-volunteer-dialog.ts
               deliveries-nav.ts
