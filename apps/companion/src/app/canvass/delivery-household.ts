@@ -63,6 +63,12 @@ const REASON_PRESETS = ['No safe place to leave it', 'Gate locked', 'Dog at the 
           </div>
         }
 
+        <!-- The campaign's delivery notes ("signs by the walkway…") — the payload's script
+             is already the delivery one on a delivery turf, selected server-side. -->
+        @if (store.payload()?.script; as script) {
+          <p class="whitespace-pre-line rounded-lg bg-base-200 px-3 py-2 text-xs text-base-content/70">{{ script }}</p>
+        }
+
         @switch (h.delivery_status ?? null) {
           @case ('delivered') {
             <div class="flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 p-3">
