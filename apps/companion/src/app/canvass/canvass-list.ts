@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signal } from '@angular/core';
 
-import type { CompanionHousehold } from '@common';
+import type { CompanionHousehold, KnockResponse } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Icon } from '@icons/icon';
 
@@ -373,21 +373,22 @@ export class CanvassList {
         this.alerts.showSuccess('Marked "Nobody home"');
         return;
       case 'supporter':
-        this.store.quickSurvey(h.id, this.quickTargetId(h), 'supporter');
-        this.alerts.showSuccess('Marked supporter');
+        this.quickStance(h, 'supporter', 'supporter');
         return;
       case 'undecided':
-        this.store.quickSurvey(h.id, this.quickTargetId(h), 'undecided');
-        this.alerts.showSuccess('Marked undecided');
+        this.quickStance(h, 'undecided', 'undecided');
         return;
       case 'non_supporter':
-        this.store.quickSurvey(h.id, this.quickTargetId(h), 'non_supporter');
-        this.alerts.showSuccess('Marked non-supporter');
+        this.quickStance(h, 'non_supporter', 'non-supporter');
         return;
-      case 'reminded':
-        this.store.quickSurvey(h.id, this.quickTargetId(h), 'supporter');
-        this.alerts.showSuccess('Reminded to vote');
+      case 'reminded': {
+        const target = this.quickTargetId(h);
+        this.store.quickSurvey(h.id, target, 'supporter');
+        this.alerts.showSuccess(
+          target ? `Reminded ${this.targetName(h, target)} to vote` : 'Reminded the household to vote',
+        );
         return;
+      }
       case 'already_voted': {
         // "Already voted" is a fact about one person's ballot. With several residents the
         // row cannot know whose, so the door opens for the volunteer to say who — an
@@ -406,6 +407,28 @@ export class CanvassList {
         void _exhaustive;
       }
     }
+  }
+
+  /**
+   * A row-level stance tap, with a confirmation that says WHO it was recorded for
+   * (operator, 2026-09-07): with one resident it names them; with several it is a
+   * household-level answer, and the toast says so and points at the door screen for
+   * per-person recording — otherwise a volunteer reasonably believes they just marked
+   * every listed person a supporter.
+   */
+  private quickStance(h: CompanionHousehold, support: KnockResponse, word: string): void {
+    const target = this.quickTargetId(h);
+    this.store.quickSurvey(h.id, target, support);
+    this.alerts.showSuccess(
+      target
+        ? `Marked ${this.targetName(h, target)} ${word}`
+        : `Marked the household ${word} — open the door to record each person`,
+    );
+  }
+
+  /** The tapped person's name for the confirmation; falls back to the generic word. */
+  private targetName(h: CompanionHousehold, personId: string): string {
+    return h.people.find((p) => p.id === personId)?.name ?? 'this resident';
   }
 
   /** The one living, contactable resident this row speaks for — or null (record door-level). */
