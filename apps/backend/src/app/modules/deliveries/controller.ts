@@ -1,49 +1,24 @@
-import { createHash, randomBytes } from 'crypto';
-
-import type { Kysely, Transaction } from 'kysely';
+import type { Transaction } from 'kysely';
 
 import { ADD_FROM_LIST_CAP, DELIVERY_PURPOSE_NOUNS } from '../../../../../../libs/common/src';
 import type {
   AddDeliveryRequestType,
   AddDeliveryRequestsFromListType,
-  AssignVolunteerType,
-  CommitDeliveriesType,
   DeliveryPurpose,
   GetSignStatusType,
   IAuthKeyPayload,
-  PlanDeliveriesType,
-  ReorderStopType,
-  ReorderStopsType,
   SetDeliveryRequestStatusType,
-  SetDeliveryRouteStatusType,
-  StopActionType,
   TurfDeliveryPurpose,
   UpdateDeliveryRequestType,
-  UpdateDeliveryRouteType,
   getAllOptionsType,
 } from '../../../../../../libs/common/src';
 
-import { env } from '../../../env';
-import { assertVolunteerLinkResendAllowed } from '../../lib/volunteer-link-resend-limit';
+import { ConflictError, NotFoundError } from '../../errors/app-errors';
 import { chunk } from '../../lib/chunk';
-import { BadRequestError, ConflictError, NotFoundError } from '../../errors/app-errors';
-import { geocodeAddress } from '../../lib/gis/geocode-address';
-import { notifyVolunteerOfLink, type VolunteerLinkSendResult } from '../../lib/mail/volunteer-link-notify';
-import { publicOrgName } from '../../lib/public-tenant';
-import { legMinutes, roadKm, type LatLng } from '../../lib/routing/geo';
-import { planRoutes, type PlanParams, type PlanStopInput } from '../../lib/routing/plan-routes';
-import {
-  AVG_SPEED_KMH,
-  MAX_STOPS_PER_PLAN,
-  SERVICE_MINUTES_PER_STOP,
-  SHARE_TOKEN_TTL_DAYS,
-} from '../../lib/routing/route-constants';
-import { UserActivityRepo } from '../../lib/user-activity.repo';
-import { volunteerLinksExpire } from '../../lib/volunteer-link-policy';
 import { logger } from '../../logger';
+import { UserActivityRepo } from '../../lib/user-activity.repo';
 import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
-import { CompanionAccessController } from '../companion-access/controller';
 // Repos only, never CanvassingController — the canvassing controller imports THIS one,
 // and the repos import nothing above the base layer, so this direction stays cycle-free.
 import { TurfAssignmentsRepo } from '../canvassing/repositories/turf-assignments.repo';
@@ -53,77 +28,10 @@ import { TurfHouseholdsRepo } from '../canvassing/repositories/turf-households.r
 import { ListsController } from '../lists/controller';
 import { WorkflowsController } from '../workflows/controller';
 import { DeliveryRequestsRepo } from './repositories/delivery-requests.repo';
-import { DeliveryRouteStopsRepo } from './repositories/delivery-route-stops.repo';
-import { DeliveryRoutesRepo } from './repositories/delivery-routes.repo';
-
-const ROUTE_DEFAULTS_SETTING_KEY = 'deliveries.route_defaults';
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-type StopVia = 'staff' | 'volunteer_link';
-
-interface RouteParamsSnapshot {
-  serviceMinutes: number;
-  avgSpeedKmh: number;
-  includeReturnLeg: boolean;
-  drivers: number | null;
-}
-
-/**
- * Workspace planning defaults (`deliveries.route_defaults`) — what the Plan routes page starts
- * from before an organizer touches anything. Editable from Workspace → Deliveries; the start
- * address is additionally remembered from the last commit.
- */
-export interface RouteDefaults extends RouteParamsSnapshot {
-  start_address: string | null;
-}
-
-export const ROUTE_DEFAULTS: RouteDefaults = {
-  start_address: null,
-  serviceMinutes: SERVICE_MINUTES_PER_STOP,
-  avgSpeedKmh: AVG_SPEED_KMH,
-  includeReturnLeg: false,
-  drivers: null,
-};
-
-/** Read stored defaults defensively — the value is free-form jsonb, not a validated column. */
-function routeDefaultsFrom(raw: unknown): RouteDefaults {
-  const obj = typeof raw === 'string' ? safeParse(raw) : raw;
-  const rec = (obj ?? {}) as Record<string, unknown>;
-  const positive = (value: unknown, fallback: number): number =>
-    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
-
-  return {
-    start_address: typeof rec['start_address'] === 'string' && rec['start_address'] ? rec['start_address'] : null,
-    serviceMinutes:
-      typeof rec['serviceMinutes'] === 'number' && rec['serviceMinutes'] >= 0
-        ? rec['serviceMinutes']
-        : ROUTE_DEFAULTS.serviceMinutes,
-    avgSpeedKmh: positive(rec['avgSpeedKmh'], ROUTE_DEFAULTS.avgSpeedKmh),
-    includeReturnLeg: rec['includeReturnLeg'] === true,
-    drivers: positive(rec['drivers'], 0) || null,
-  };
-}
-
-function resolveParams(input: PlanDeliveriesType): PlanParams {
-  return {
-    serviceMinutes: input.service_minutes ?? SERVICE_MINUTES_PER_STOP,
-    avgSpeedKmh: input.avg_speed_kmh ?? AVG_SPEED_KMH,
-    includeReturnLeg: input.include_return_leg ?? false,
-    drivers: input.drivers ?? null,
-  };
-}
-
-/** Human-readable route name: "Maple St area — Jul 10" derived from the first stop + today. */
-function deriveRouteName(firstAddress: string, date: Date): string {
-  const firstSegment = (firstAddress.split(',')[0] ?? '').trim();
-  const streetOnly = firstSegment.replace(/^\d+\s+/, '').trim();
-  const area = streetOnly || firstSegment || 'Delivery';
-  const label = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  return `${area} area — ${label}`;
-}
 
 /**
  * The partial unique index enforcing "one open delivery request per household PER PURPOSE"
+ "one open delivery request per household PER PURPOSE"
  * (§14; scoped per purpose by the 2026-09-06 turf-modes migration — an open yard-sign request
  * and an open flyer request may coexist on one household, two of the same kind may not).
  */
@@ -152,9 +60,6 @@ export class DeliveriesController {
   private readonly turfAssignments = new TurfAssignmentsRepo();
   private readonly turfHouseholds = new TurfHouseholdsRepo();
   private readonly campaignsRepo = new CampaignsRepo();
-  private readonly companionAccess = new CompanionAccessController();
-  private readonly routesRepo = new DeliveryRoutesRepo();
-  private readonly stopsRepo = new DeliveryRouteStopsRepo();
   private readonly userActivity = new UserActivityRepo();
 
   // ---- Requests -----------------------------------------------------------
@@ -576,21 +481,6 @@ export class DeliveriesController {
   }
 
   public async setRequestStatus(auth: IAuthKeyPayload, input: SetDeliveryRequestStatusType) {
-    // A request sitting on an active (pending) stop can't be declined or reset out from under a
-    // route. Approved + pending stop is the normal on-route state, and 'delivered' flows THROUGH
-    // the stop below so route progress stays truthful.
-    if (input.status === 'declined' || input.status === 'new') {
-      const onRoute = await this.requestsRepo.db
-        .selectFrom('delivery_route_stops')
-        .select(['id'])
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('request_id', 'in', input.ids)
-        .where('status', '=', 'pending')
-        .executeTakeFirst();
-      if (onRoute) {
-        throw new BadRequestError('Remove these requests from their route first, or cancel that route.');
-      }
-    }
     try {
       return await this.doSetRequestStatus(auth, input);
     } catch (err) {
@@ -621,23 +511,7 @@ export class DeliveriesController {
 
   private async doSetRequestStatus(auth: IAuthKeyPayload, input: SetDeliveryRequestStatusType) {
     return this.requestsRepo.transaction().execute(async (trx) => {
-      let directIds = input.ids;
-      if (input.status === 'delivered') {
-        // Manual "the sign is in the ground" flip: requests on an active route deliver via their
-        // stop (staff-attributed), which also advances/auto-completes the route.
-        const pendingStops = await trx
-          .selectFrom('delivery_route_stops')
-          .select(['id', 'route_id', 'request_id'])
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('request_id', 'in', input.ids)
-          .where('status', '=', 'pending')
-          .execute();
-        for (const stop of pendingStops) {
-          await this.applyStopTransition(trx, auth, String(stop.route_id), String(stop.id), 'deliver', null, 'staff');
-        }
-        const handled = new Set(pendingStops.map((s) => String(s.request_id)));
-        directIds = input.ids.filter((id) => !handled.has(id));
-      }
+      const directIds = input.ids;
       if (directIds.length > 0) {
         // The sign_delivered trigger fires only on a genuine transition, so capture which of
         // these rows were not already delivered before the blanket update below.
@@ -700,12 +574,8 @@ export class DeliveriesController {
    * A canvasser handed the sign over at the door.
    *
    * Runs inside the caller's transaction so it either happens with the knock or not at all.
-   * Three things it must get right:
+   * Two things it must get right:
    *
-   * - **It goes through the route stop when there is one.** A house whose sign a canvasser
-   *   already delivered must not still be a stop a driver is asked to make. Reusing
-   *   `applyStopTransition` means the route advances and auto-completes exactly as it does
-   *   when the driver taps the button themselves.
    * - **It creates the request when there is none**, because a canvasser carrying signs can
    *   hand one to somebody who has never asked. The tenant-wide open-per-household index is
    *   the real guard against a duplicate; a conflict means another campaign is holding this
@@ -716,8 +586,10 @@ export class DeliveriesController {
    *
    * The two nothing-happened outcomes are distinct on purpose: 'already_delivered' means the
    * world already matches what was asked, but 'other_campaign' means the handover was recorded
-   * NOWHERE — the caller owes the volunteer an honest rejection, not a success toast that leaves
-   * a driver routed to this house later (REVIEW6 T2-15).
+   * NOWHERE — the caller owes the volunteer an honest rejection, not a success toast (REVIEW6
+   * T2-15). (The old driving-route stop transition is gone with the routes themselves —
+   * turfs-absorb-deliveries Phase 4; a delivery-turf pointer, when one carries this request,
+   * is untouched here: the turf shows the door as served either way.)
    */
   public async deliverHouseholdSign(
     trx: Transaction<Models>,
@@ -728,36 +600,15 @@ export class DeliveriesController {
     if (resolution.outcome !== 'ok') return resolution.outcome;
     const requestId = resolution.requestId;
 
-    const stop = await trx
-      .selectFrom('delivery_route_stops')
-      .select(['id', 'route_id'])
+    await trx
+      .updateTable('delivery_requests')
+      .set({ status: 'delivered', skip_reason: null, updatedby_id: auth.user_id, updated_at: new Date() })
       .where('tenant_id', '=', auth.tenant_id)
-      .where('request_id', '=', requestId)
-      .where('status', '=', 'pending')
-      .executeTakeFirst();
-
-    if (stop) {
-      await this.applyStopTransition(
-        trx,
-        auth,
-        String(stop.route_id),
-        String(stop.id),
-        'deliver',
-        null,
-        'volunteer_link',
-      );
-    } else {
-      await trx
-        .updateTable('delivery_requests')
-        .set({ status: 'delivered', skip_reason: null, updatedby_id: auth.user_id, updated_at: new Date() })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', requestId)
-        .execute();
-      // The stop path fires inside applyStopTransition; this direct flip must fire its own.
-      // resolveSignRequestForDelivery already returned 'already_delivered' for a re-delivery,
-      // so reaching here is a genuine transition.
-      await this.triggerSignDeliveredWorkflows(trx, auth.tenant_id, [requestId]);
-    }
+      .where('id', '=', requestId)
+      .execute();
+    // resolveSignRequestForDelivery already returned 'already_delivered' for a re-delivery,
+    // so reaching here is a genuine transition.
+    await this.triggerSignDeliveredWorkflows(trx, auth.tenant_id, [requestId]);
     await this.logRequestStanding(trx, auth, [requestId], 'delivered', input.via);
     return 'delivered';
   }
@@ -766,9 +617,9 @@ export class DeliveriesController {
    * The canvasser undid it — they hadn't handed the sign over after all.
    *
    * The request returns to the pool as `approved` (somebody did ask for a sign, so it is
-   * still owed), and a stop that was flipped by the delivery above is restored to pending,
-   * reopening its route if that stop had completed it. Doing less than that would leave a
-   * driver's route claiming a house was done.
+   * still owed). A delivery-turf pointer, when one exists, is untouched: whether the door
+   * reads "out with the outing" or "ready" follows the pointer, which the turf's retire
+   * hook governs.
    */
   public async undoHouseholdSignDelivery(
     trx: Transaction<Models>,
@@ -790,39 +641,12 @@ export class DeliveriesController {
     if (!request) return false;
     const requestId = String(request.id);
 
-    const stop = await trx
-      .selectFrom('delivery_route_stops as s')
-      .innerJoin('delivery_routes as r', 'r.id', 's.route_id')
-      .select(['s.id', 's.route_id', 'r.status as route_status'])
-      .where('s.tenant_id', '=', auth.tenant_id)
-      .where('r.tenant_id', '=', auth.tenant_id)
-      .where('s.request_id', '=', requestId)
-      .where('s.status', '=', 'delivered')
-      .executeTakeFirst();
-
-    if (stop && String(stop.route_status) !== 'canceled') {
-      await this.undoStop(trx, auth, String(stop.route_id), String(stop.id));
-    } else {
-      // No stop, or the stop's route was canceled after the delivery. Restoring a pending stop
-      // onto a canceled route would park the request where nobody will ever drive it AND hide it
-      // from planning, which only excludes requests that have a pending stop somewhere
-      // (REVIEW6 T2-14). Instead the stop takes the same 'skipped' state route-cancel gives
-      // undelivered stops, and the request itself returns to the pool.
-      if (stop) {
-        await trx
-          .updateTable('delivery_route_stops')
-          .set({ status: 'skipped', reason: 'Other', updatedby_id: auth.user_id, updated_at: new Date() })
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('id', '=', String(stop.id))
-          .execute();
-      }
-      await trx
-        .updateTable('delivery_requests')
-        .set({ status: 'approved', skip_reason: null, updatedby_id: auth.user_id, updated_at: new Date() })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', requestId)
-        .execute();
-    }
+    await trx
+      .updateTable('delivery_requests')
+      .set({ status: 'approved', skip_reason: null, updatedby_id: auth.user_id, updated_at: new Date() })
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('id', '=', requestId)
+      .execute();
     await this.logRequestStanding(trx, auth, [requestId], 'undelivered', input.via);
     return true;
   }
@@ -871,503 +695,21 @@ export class DeliveriesController {
     return created?.id != null ? { outcome: 'ok', requestId: String(created.id) } : { outcome: 'other_campaign' };
   }
 
-  // ---- Planning -----------------------------------------------------------
-  public async previewPlan(auth: IAuthKeyPayload, input: PlanDeliveriesType) {
-    const geo = await geocodeAddress(input.start_address);
-    if (!geo) {
-      throw new BadRequestError("We couldn't locate that start address. Check it and try again.");
-    }
-    const start: LatLng = { lat: geo.lat, lng: geo.lng };
-    const params = resolveParams(input);
-
-    const eligible = await this.requestsRepo.getEligibleForPlanning(auth.tenant_id, MAX_STOPS_PER_PLAN + 1);
-    const capApplied = eligible.length > MAX_STOPS_PER_PLAN;
-    const capped = capApplied ? eligible.slice(0, MAX_STOPS_PER_PLAN) : eligible;
-    const byId = new Map(capped.map((e) => [e.request_id, e] as const));
-
-    const stops: PlanStopInput[] = capped.map((e) => ({ requestId: e.request_id, lat: e.lat, lng: e.lng }));
-    const result = planRoutes(start, stops, params);
-
-    const routes = result.routes.map((route, i) => ({
-      index: i + 1,
-      total_minutes: route.totalMinutes,
-      total_km: route.totalKm,
-      stops: route.stops.map((s) => {
-        const info = byId.get(s.requestId);
-        return {
-          request_id: s.requestId,
-          seq: s.seq,
-          leg_minutes: s.legMinutes,
-          address: info?.address ?? '',
-          name: info?.name ?? null,
-        };
-      }),
-    }));
-
-    const unroutable = result.unroutable.map((u) => {
-      const info = byId.get(u.requestId);
-      const reasonText =
-        u.reason === 'isolated'
-          ? `Isolated. The nearest other stop is ${u.nearestKm} km away`
-          : `Too far to reach within an hour from this start (${u.nearestKm} km out)`;
-      return { request_id: u.requestId, reason: u.reason, reason_text: reasonText, address: info?.address ?? '' };
-    });
-
-    const buckets = await this.requestsRepo.getIneligibleBuckets(auth.tenant_id);
-
-    return {
-      start: { address: geo.formatted_address, lat: geo.lat, lng: geo.lng },
-      eligible_count: capped.length,
-      cap_applied: capApplied,
-      routes,
-      unroutable,
-      ineligible: buckets,
-    };
-  }
-
-  public async commitPlan(auth: IAuthKeyPayload, input: CommitDeliveriesType) {
-    const geo = await geocodeAddress(input.start_address);
-    if (!geo) throw new BadRequestError("We couldn't locate that start address. Check it and try again.");
-    const start: LatLng = { lat: geo.lat, lng: geo.lng };
-    const params = resolveParams(input);
-    const snapshot: RouteParamsSnapshot = {
-      serviceMinutes: params.serviceMinutes,
-      avgSpeedKmh: params.avgSpeedKmh,
-      includeReturnLeg: params.includeReturnLeg,
-      drivers: params.drivers ?? null,
-    };
-    const now = new Date();
-
-    return this.routesRepo.transaction().execute(async (trx) => {
-      const skipped: Array<{ request_id: string; reason: string }> = [];
-      let created = 0;
-      let firstRouteId: string | null = null;
-
-      for (const proposed of input.routes) {
-        const eligible = await this.requestsRepo.getEligibleByIds(auth.tenant_id, proposed.request_ids, trx);
-        const eligibleById = new Map(eligible.map((e) => [e.request_id, e] as const));
-        // Preserve the client's order, dropping any request that lost eligibility (concurrent planner).
-        const ordered = proposed.request_ids.filter((id) => eligibleById.has(id));
-        for (const id of proposed.request_ids) {
-          if (!eligibleById.has(id)) skipped.push({ request_id: id, reason: 'no_longer_eligible' });
-        }
-        if (ordered.length === 0) continue;
-
-        // Recompute legs server-side — never trust client math.
-        let cursor: LatLng = start;
-        let totalMinutes = 0;
-        let totalKm = 0;
-        const legs: number[] = [];
-        for (const id of ordered) {
-          const e = eligibleById.get(id);
-          if (!e) continue;
-          const point: LatLng = { lat: e.lat, lng: e.lng };
-          const leg = legMinutes(cursor, point, params.avgSpeedKmh);
-          legs.push(leg);
-          totalMinutes += leg + params.serviceMinutes;
-          totalKm += roadKm(cursor, point);
-          cursor = point;
-        }
-        if (params.includeReturnLeg) totalKm += roadKm(cursor, start);
-
-        const firstAddress = eligibleById.get(ordered[0] ?? '')?.address ?? '';
-        // A route inherits the campaign of the requests it serves (§15); the
-        // eligibility query keeps plans single-campaign, so the first stop is
-        // representative.
-        const firstRequest = await trx
-          .selectFrom('delivery_requests')
-          .select(['campaign_id'])
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('id', '=', String(ordered[0]))
-          .executeTakeFirstOrThrow();
-        const routeRow = {
-          tenant_id: auth.tenant_id,
-          campaign_id: String(firstRequest.campaign_id),
-          name: deriveRouteName(firstAddress, now),
-          status: 'draft',
-          volunteer_person_id: null,
-          start_address: geo.formatted_address,
-          start_lat: start.lat,
-          start_lng: start.lng,
-          est_minutes: Math.round(totalMinutes * 10) / 10,
-          est_km: Math.round(totalKm * 10) / 10,
-          scheduled_for: null,
-          share_token_hash: null,
-          share_token_expires_at: null,
-          params: JSON.stringify(snapshot),
-          createdby_id: auth.user_id,
-          updatedby_id: auth.user_id,
-        } as OperationDataType<'delivery_routes', 'insert'>;
-        const route = await this.routesRepo.add({ row: routeRow }, trx);
-        const routeId = String(route.id);
-        if (!firstRouteId) firstRouteId = routeId;
-
-        const stopRows = ordered.map(
-          (id, i) =>
-            ({
-              tenant_id: auth.tenant_id,
-              route_id: routeId,
-              request_id: id,
-              seq: i + 1,
-              leg_minutes: Math.round((legs[i] ?? 0) * 10) / 10,
-              status: 'pending',
-              reason: null,
-              acted_at: null,
-              acted_via: null,
-              createdby_id: auth.user_id,
-              updatedby_id: auth.user_id,
-            }) as OperationDataType<'delivery_route_stops', 'insert'>,
-        );
-        await this.stopsRepo.addMany({ rows: stopRows }, trx);
-        created++;
-        await this.logRouteActivity(trx, auth, routeId, 'create', 'route_created', 'Route created from plan');
-      }
-
-      // Persist the start address as the tenant default for the next plan.
-      await this.saveRouteDefaults(trx, auth, { start_address: geo.formatted_address });
-
-      return { created, skipped, first_route_id: firstRouteId };
-    });
-  }
-
-  public async getRouteDefaults(tenant: string): Promise<RouteDefaults> {
-    const row = await this.routesRepo.db
-      .selectFrom('settings')
-      .select('value')
-      .where('tenant_id', '=', tenant)
-      .where('key', '=', ROUTE_DEFAULTS_SETTING_KEY)
-      .executeTakeFirst();
-    return routeDefaultsFrom(row?.value);
-  }
-
-  /** Workspace → Deliveries. Replaces the planning knobs; the remembered start address survives. */
-  public async setRouteDefaults(auth: IAuthKeyPayload, input: Partial<RouteDefaults>): Promise<RouteDefaults> {
-    const current = await this.getRouteDefaults(auth.tenant_id);
-    const next = routeDefaultsFrom({ ...current, ...input });
-    await this.writeRouteDefaults(this.routesRepo.db, auth, next);
-    return next;
-  }
-
-  private async saveRouteDefaults(
-    trx: Transaction<Models>,
-    auth: IAuthKeyPayload,
-    value: { start_address: string },
-  ): Promise<void> {
-    // Merge, never replace: a commit only knows the start address, and overwriting the whole
-    // value here would silently reset the planning defaults an admin configured.
-    const current = await this.getRouteDefaults(auth.tenant_id);
-    await this.writeRouteDefaults(trx, auth, { ...current, ...value });
-  }
-
-  private async writeRouteDefaults(
-    db: Kysely<Models> | Transaction<Models>,
-    auth: IAuthKeyPayload,
-    value: RouteDefaults,
-  ): Promise<void> {
-    await db
-      .insertInto('settings')
-      .values({
-        tenant_id: auth.tenant_id,
-        key: ROUTE_DEFAULTS_SETTING_KEY,
-        value: JSON.stringify(value),
-        createdby_id: auth.user_id,
-        updatedby_id: auth.user_id,
-      })
-      .onConflict((oc) =>
-        oc.columns(['tenant_id', 'key']).doUpdateSet({ value: JSON.stringify(value), updatedby_id: auth.user_id }),
-      )
-      .execute();
-  }
-
-  // ---- Routes -------------------------------------------------------------
-  public getAllRoutes(tenant: string, options?: getAllOptionsType) {
-    return this.routesRepo.getAllWithCounts({ tenant_id: tenant, options: options as never });
-  }
-
-  public getRouteCounts(tenant: string) {
-    return this.routesRepo.getStatusCounts(tenant);
-  }
-
-  public async getRouteById(auth: IAuthKeyPayload, id: string) {
-    const route = await this.routesRepo.getRouteRow(auth.tenant_id, id);
-    if (!route) throw new NotFoundError('Route not found');
-    const stops = await this.stopsRepo.getStopsForRoute(auth.tenant_id, id);
-    let volunteerName: string | null = null;
-    if (route.volunteer_person_id) {
-      const v = await this.routesRepo.db
-        .selectFrom('persons')
-        .select(['first_name', 'last_name'])
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', String(route.volunteer_person_id))
-        .executeTakeFirst();
-      if (v) volunteerName = `${v.first_name ?? ''} ${v.last_name ?? ''}`.trim() || null;
-    }
-    const expiryEnforced = await volunteerLinksExpire(this.routesRepo.db, auth.tenant_id);
-    return this.sanitizeRoute(route, stops, volunteerName, expiryEnforced);
-  }
-
-  public async updateRoute(auth: IAuthKeyPayload, id: string, input: UpdateDeliveryRouteType) {
-    const row: Record<string, unknown> = { updatedby_id: auth.user_id, updated_at: new Date() };
-    if (input.name !== undefined) row['name'] = input.name;
-    if (input.scheduled_for !== undefined) {
-      row['scheduled_for'] = input.scheduled_for ? new Date(input.scheduled_for) : null;
-    }
-    const updated = await this.routesRepo.update({
-      tenant_id: auth.tenant_id,
-      id,
-      row: row as OperationDataType<'delivery_routes', 'update'>,
-    });
-    if (!updated) throw new NotFoundError('Route not found');
-    return { id };
-  }
-
-  public async assignVolunteer(auth: IAuthKeyPayload, input: AssignVolunteerType) {
-    const route = await this.routesRepo.getRouteRow(auth.tenant_id, input.route_id);
-    if (!route) throw new NotFoundError('Route not found');
-    const personId = input.person_id ? String(input.person_id) : null;
-    // Assigning moves draft → assigned; clearing a volunteer on a draft/assigned route → draft.
-    let status: 'draft' | 'assigned' | 'in_progress' | 'completed' | 'canceled' = route.status;
-    if (personId && status === 'draft') status = 'assigned';
-    if (!personId && status === 'assigned') status = 'draft';
-
-    if (!personId) {
-      await this.routesRepo.db
-        .updateTable('delivery_routes')
-        .set({ volunteer_person_id: null, status, updatedby_id: auth.user_id, updated_at: new Date() })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', input.route_id)
-        .execute();
-      await this.logRouteActivity(
-        undefined,
-        auth,
-        input.route_id,
-        'unassign',
-        'volunteer_unassigned',
-        'Volunteer removed',
-      );
-      return { id: input.route_id, status, sent: { email: false, sms: false } };
-    }
-
-    const person = await this.routesRepo.db
-      .selectFrom('persons')
-      .select(['first_name', 'email', 'mobile'])
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', personId)
-      .executeTakeFirst();
-    if (!person) throw new BadRequestError('Pick the volunteer this route belongs to.');
-
-    // The link is personal, so assignment sends it: mint a fresh token (the raw
-    // token is never stored — this is the only moment we can put it in a message)
-    // and enqueue the email/SMS in the same transaction as the assignment. A new
-    // token also retires any link a previously assigned volunteer still holds.
-    const rawToken = randomBytes(32).toString('base64url');
-    const url = `${env.companionUrl}/r/${rawToken}`;
-    const orgName = await publicOrgName(auth.tenant_id);
-    let sent: VolunteerLinkSendResult = { email: false, sms: false };
-    await this.routesRepo.transaction().execute(async (trx) => {
-      await trx
-        .updateTable('delivery_routes')
-        .set({
-          volunteer_person_id: personId,
-          status,
-          share_token_hash: createHash('sha256').update(rawToken).digest('hex'),
-          share_token_expires_at: new Date(Date.now() + SHARE_TOKEN_TTL_DAYS * MS_PER_DAY),
-          updatedby_id: auth.user_id,
-          updated_at: new Date(),
-        })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', input.route_id)
-        .execute();
-      sent = await notifyVolunteerOfLink(
-        {
-          tenant_id: auth.tenant_id,
-          person,
-          orgName,
-          kindLabel: 'delivery route',
-          itemName: String(route.name ?? 'Delivery route'),
-          url,
-        },
-        trx,
-      );
-      await this.logRouteActivity(
-        trx,
-        auth,
-        input.route_id,
-        'assign',
-        'volunteer_assigned',
-        sent.email || sent.sms
-          ? `Volunteer assigned — link sent by ${[sent.email ? 'email' : null, sent.sms ? 'text' : null].filter(Boolean).join(' and ')}`
-          : 'Volunteer assigned — no contact info on file, link not sent',
-      );
-    });
-    return { id: input.route_id, status, sent };
-  }
-
-  /**
-   * Re-send the assigned volunteer their personal link (lost email, new phone…).
-   * The raw token is never stored, so re-sending means minting a fresh link — the
-   * previously sent one stops working, same rule as re-assignment and regenerate.
-   */
-  public async resendVolunteerLink(auth: IAuthKeyPayload, routeId: string) {
-    const route = await this.routesRepo.getRouteRow(auth.tenant_id, routeId);
-    if (!route) throw new NotFoundError('Route not found');
-    if (route.volunteer_person_id == null) {
-      throw new BadRequestError('Assign a volunteer to this route first. The link is personal.');
-    }
-    if (route.status === 'canceled' || route.status === 'completed') {
-      throw new BadRequestError('This route is over — there is nothing for the volunteer to open.');
-    }
-    const person = await this.routesRepo.db
-      .selectFrom('persons')
-      .select(['first_name', 'email', 'mobile'])
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', String(route.volunteer_person_id))
-      .executeTakeFirst();
-    if (!person) throw new BadRequestError('The assigned volunteer no longer exists. Assign another volunteer.');
-
-    // SECURITY (H3): this sends an SMS to whatever number is on the person record, with a
-    // tenant-authored org name as the prefix, and was previously unlimited — so it doubled
-    // as an SMS bomber aimed at any number, billed to the platform's Twilio account. Capped
-    // per route AND per destination number, mirroring the phone-verification limiter.
-    await assertVolunteerLinkResendAllowed(auth.tenant_id, routeId, person.mobile);
-
-    const rawToken = randomBytes(32).toString('base64url');
-    const url = `${env.companionUrl}/r/${rawToken}`;
-    const orgName = await publicOrgName(auth.tenant_id);
-    let sent: VolunteerLinkSendResult = { email: false, sms: false };
-    await this.routesRepo.transaction().execute(async (trx) => {
-      await trx
-        .updateTable('delivery_routes')
-        .set({
-          share_token_hash: createHash('sha256').update(rawToken).digest('hex'),
-          share_token_expires_at: new Date(Date.now() + SHARE_TOKEN_TTL_DAYS * MS_PER_DAY),
-          updatedby_id: auth.user_id,
-          updated_at: new Date(),
-        })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', routeId)
-        .execute();
-      sent = await notifyVolunteerOfLink(
-        {
-          tenant_id: auth.tenant_id,
-          person,
-          orgName,
-          kindLabel: 'delivery route',
-          itemName: String(route.name ?? 'Delivery route'),
-          url,
-        },
-        trx,
-      );
-      if (!sent.email && !sent.sms) {
-        // Rolls back the mint: a resend that reaches nobody must not retire the link they already have.
-        throw new BadRequestError(
-          'This volunteer has no email or mobile on file — add one to their record, or use "Copy volunteer link" to share it yourself.',
-        );
-      }
-      await this.logRouteActivity(
-        trx,
-        auth,
-        routeId,
-        'update',
-        'link_resent',
-        `Volunteer link re-sent by ${[sent.email ? 'email' : null, sent.sms ? 'text' : null].filter(Boolean).join(' and ')}`,
-      );
-    });
-    return { id: routeId, sent };
-  }
-
-  public async setRouteStatus(auth: IAuthKeyPayload, input: SetDeliveryRouteStatusType) {
-    const route = await this.routesRepo.getRouteRow(auth.tenant_id, input.route_id);
-    if (!route) throw new NotFoundError('Route not found');
-    if (input.status === 'canceled') {
-      return this.cancelRoute(auth, input.route_id);
-    }
-    await this.routesRepo.db
-      .updateTable('delivery_routes')
-      .set({ status: input.status, updatedby_id: auth.user_id, updated_at: new Date() })
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', input.route_id)
-      .execute();
-    return { id: input.route_id, status: input.status };
-  }
-
-  private async cancelRoute(auth: IAuthKeyPayload, routeId: string) {
-    return this.routesRepo.transaction().execute((trx) => this.cancelRouteInTrx(trx, auth, routeId));
-  }
-
-  private async cancelRouteInTrx(trx: Transaction<Models>, auth: IAuthKeyPayload, routeId: string) {
-    // Undelivered (pending) stops return their requests to the pool; delivered stay delivered.
-    const pending = await trx
-      .selectFrom('delivery_route_stops')
-      .select(['id', 'request_id'])
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('route_id', '=', routeId)
-      .where('status', '=', 'pending')
-      .execute();
-    const requestIds = pending.map((p) => String(p.request_id));
-    if (requestIds.length > 0) {
-      await trx
-        .updateTable('delivery_requests')
-        .set({ status: 'approved', updatedby_id: auth.user_id, updated_at: new Date() })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', 'in', requestIds)
-        .execute();
-      await trx
-        .updateTable('delivery_route_stops')
-        .set({ status: 'skipped', reason: 'Other', updatedby_id: auth.user_id, updated_at: new Date() })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where(
-          'id',
-          'in',
-          pending.map((p) => String(p.id)),
-        )
-        .execute();
-    }
-    await trx
-      .updateTable('delivery_routes')
-      .set({ status: 'canceled', updatedby_id: auth.user_id, updated_at: new Date() })
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', routeId)
-      .execute();
-    await this.logRouteActivity(
-      trx,
-      auth,
-      routeId,
-      'update',
-      'route_canceled',
-      `Route canceled. ${requestIds.length} undelivered stops returned to the pool`,
-    );
-    return { id: routeId, status: 'canceled' as const, returned: requestIds.length };
-  }
-
   /**
    * Campaign archive sweep (§15): an archived campaign is read-only, so its open requests would
-   * otherwise hold the one-open-request-per-household slot forever. Cancel its live routes, then
-   * decline its open requests — all on the caller's (archive) transaction. Stops belonging to
-   * this campaign's requests that sit on ANOTHER campaign's route are skipped defensively, so a
-   * declined request never remains on a pending stop.
+   * otherwise hold the one-open-request-per-household slot forever. Retire its delivery turfs,
+   * then decline its open requests — all on the caller's (archive) transaction. (The route-cancel
+   * half retired with the routes themselves — turfs-absorb-deliveries Phase 4.)
    */
   public async closeCampaignDeliveries(
     trx: Transaction<Models>,
     auth: IAuthKeyPayload,
     campaignId: string,
-  ): Promise<{ declined: number; routesCanceled: number }> {
-    const liveRoutes = await trx
-      .selectFrom('delivery_routes')
-      .select(['id'])
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('campaign_id', '=', campaignId)
-      .where('status', 'in', ['draft', 'assigned', 'in_progress'])
-      .execute();
-    for (const route of liveRoutes) {
-      await this.cancelRouteInTrx(trx, auth, String(route.id));
-    }
-
-    // The turf-era sibling of the route cancellation above: an archived (read-only)
-    // campaign must not keep volunteers out delivering for it. Retire its delivery
-    // turfs, revoke their links, and drop their undelivered requests back into the
-    // pool — where the blanket decline below then closes them like every other open
-    // request of the campaign.
+  ): Promise<{ declined: number; turfsRetired: number }> {
+    // An archived (read-only) campaign must not keep volunteers out delivering for it.
+    // Retire its delivery turfs, revoke their links, and drop their undelivered requests
+    // back into the pool — where the blanket decline below then closes them like every
+    // other open request of the campaign.
     const deliveryTurfs = await trx
       .selectFrom('turfs')
       .select(['id'])
@@ -1394,8 +736,6 @@ export class DeliveriesController {
         .execute();
     }
 
-    // Stray pending stops: eligibility doesn't filter by campaign, so a request of this campaign
-    // can sit on a route named after another campaign. Skip those stops without touching the route.
     const openRequestIds = (
       await trx
         .selectFrom('delivery_requests')
@@ -1406,15 +746,8 @@ export class DeliveriesController {
         .execute()
     ).map((r) => String(r.id));
     if (openRequestIds.length === 0) {
-      return { declined: 0, routesCanceled: liveRoutes.length };
+      return { declined: 0, turfsRetired: deliveryTurfs.length };
     }
-    await trx
-      .updateTable('delivery_route_stops')
-      .set({ status: 'skipped', reason: 'Other', updatedby_id: auth.user_id, updated_at: new Date() })
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('request_id', 'in', openRequestIds)
-      .where('status', '=', 'pending')
-      .execute();
 
     await trx
       .updateTable('delivery_requests')
@@ -1425,301 +758,9 @@ export class DeliveriesController {
       .where('id', 'in', openRequestIds)
       .execute();
     await this.logRequestStanding(trx, auth, openRequestIds, 'declined');
-    return { declined: openRequestIds.length, routesCanceled: liveRoutes.length };
+    return { declined: openRequestIds.length, turfsRetired: deliveryTurfs.length };
   }
 
-  public async deleteRoute(auth: IAuthKeyPayload, id: string) {
-    const route = await this.routesRepo.getRouteRow(auth.tenant_id, id);
-    if (!route) throw new NotFoundError('Route not found');
-    const status = String(route.status);
-    if (status !== 'draft' && status !== 'assigned') {
-      throw new BadRequestError('Only draft or assigned routes can be deleted. Cancel the route first.');
-    }
-    // Stops cascade via FK; requests free automatically once their pending stop is gone.
-    await this.routesRepo.delete({ tenant_id: auth.tenant_id, id });
-    return { id };
-  }
-
-  // ---- Stops (staff) ------------------------------------------------------
-  public async stopAction(auth: IAuthKeyPayload, input: StopActionType) {
-    if (input.action === 'remove') {
-      return this.removeStop(auth, input.route_id, input.stop_id);
-    }
-    const action = input.action; // narrowed to 'deliver' | 'skip'
-    return this.routesRepo.transaction().execute(async (trx) => {
-      await this.applyStopTransition(trx, auth, input.route_id, input.stop_id, action, input.reason ?? null, 'staff');
-      return this.readRouteProgress(trx, auth.tenant_id, input.route_id);
-    });
-  }
-
-  private async removeStop(auth: IAuthKeyPayload, routeId: string, stopId: string) {
-    return this.routesRepo.transaction().execute(async (trx) => {
-      const stop = await trx
-        .selectFrom('delivery_route_stops')
-        .selectAll()
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', stopId)
-        .where('route_id', '=', routeId)
-        .executeTakeFirst();
-      if (!stop) throw new NotFoundError('Stop not found');
-      // Free the request back to the pool then delete the stop and renumber/recompute.
-      await trx
-        .updateTable('delivery_requests')
-        .set({ status: 'approved', updatedby_id: auth.user_id, updated_at: new Date() })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', String(stop.request_id))
-        .execute();
-      await trx
-        .deleteFrom('delivery_route_stops')
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', stopId)
-        .execute();
-      await this.renumberAndRecompute(trx, auth, routeId);
-      await this.logRouteActivity(
-        trx,
-        auth,
-        routeId,
-        'update',
-        'stop_removed',
-        'Stop removed. Request returned to the pool',
-      );
-      return this.readRouteProgress(trx, auth.tenant_id, routeId);
-    });
-  }
-
-  /**
-   * Drag-to-reorder: reseat only the PENDING stops of a route into the given order. Delivered and
-   * skipped stops are not movable — they keep their exact seq, and the pending stops are permuted
-   * across the seq slots they already occupy. `ordered_stop_ids` must be exactly the set of the
-   * route's pending stop ids (any foreign, non-pending, or missing id is rejected). Seq writes go
-   * through `applySeqOrder`'s temp-offset trick to dodge the unique(route_id, seq) index, then legs
-   * and the route estimate are recomputed. One `stop_reordered` activity is logged, matching the
-   * adjacent-swap path.
-   */
-  public async reorderStops(auth: IAuthKeyPayload, input: ReorderStopsType) {
-    return this.routesRepo.transaction().execute(async (trx) => {
-      const route = await trx
-        .selectFrom('delivery_routes')
-        .select(['id'])
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', input.route_id)
-        .executeTakeFirst();
-      if (!route) throw new NotFoundError('Route not found');
-
-      const stops = await trx
-        .selectFrom('delivery_route_stops')
-        .select(['id', 'seq', 'status'])
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('route_id', '=', input.route_id)
-        .orderBy('seq', 'asc')
-        .execute();
-
-      const pendingIds = stops.filter((s) => s.status === 'pending').map((s) => String(s.id));
-      const requested = input.ordered_stop_ids;
-      // Exact set equality: same length + same members. This one check rejects a foreign/other-route
-      // stop, a delivered/skipped id, and a missing pending id all at once.
-      const pendingSet = new Set(pendingIds);
-      const sameMembers =
-        requested.length === pendingIds.length &&
-        new Set(requested).size === requested.length &&
-        requested.every((id) => pendingSet.has(id));
-      if (!sameMembers) {
-        throw new BadRequestError('The new order must list exactly the route’s pending stops.');
-      }
-      if (pendingIds.length < 2) {
-        // Nothing to permute — no-op, but return the current authoritative shape.
-        return this.readRouteProgress(trx, auth.tenant_id, input.route_id);
-      }
-
-      // Drop the pending stops into the slots they currently occupy, in the requested order, while
-      // every non-pending stop stays exactly where it is (so it keeps its seq).
-      const queue = [...requested];
-      const finalOrder = stops.map((s) => (s.status === 'pending' ? (queue.shift() ?? String(s.id)) : String(s.id)));
-      await this.applySeqOrder(trx, auth.tenant_id, finalOrder);
-      await this.renumberAndRecompute(trx, auth, input.route_id);
-      await this.logRouteActivity(trx, auth, input.route_id, 'update', 'stop_reordered', 'Stops reordered');
-      return this.readRouteProgress(trx, auth.tenant_id, input.route_id);
-    });
-  }
-
-  public async reorderStop(auth: IAuthKeyPayload, input: ReorderStopType) {
-    return this.routesRepo.transaction().execute(async (trx) => {
-      const stops = await trx
-        .selectFrom('delivery_route_stops')
-        .select(['id', 'seq'])
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('route_id', '=', input.route_id)
-        .orderBy('seq', 'asc')
-        .execute();
-      const idx = stops.findIndex((s) => String(s.id) === input.stop_id);
-      if (idx === -1) throw new NotFoundError('Stop not found');
-      const swapIdx = input.direction === 'up' ? idx - 1 : idx + 1;
-      if (swapIdx < 0 || swapIdx >= stops.length) {
-        return this.readRouteProgress(trx, auth.tenant_id, input.route_id);
-      }
-      const a = stops[idx];
-      const b = stops[swapIdx];
-      if (!a || !b) return this.readRouteProgress(trx, auth.tenant_id, input.route_id);
-      // Swap seq via a temporary value to avoid the unique(route_id, seq) collision.
-      await this.setStopSeq(trx, auth.tenant_id, String(a.id), -1);
-      await this.setStopSeq(trx, auth.tenant_id, String(b.id), Number(a.seq));
-      await this.setStopSeq(trx, auth.tenant_id, String(a.id), Number(b.seq));
-      await this.renumberAndRecompute(trx, auth, input.route_id);
-      await this.logRouteActivity(trx, auth, input.route_id, 'update', 'stop_reordered', 'Stops reordered');
-      return this.readRouteProgress(trx, auth.tenant_id, input.route_id);
-    });
-  }
-
-  // ---- Share links --------------------------------------------------------
-  public async mintShareLink(auth: IAuthKeyPayload, input: { route_id: string; regenerate?: boolean }) {
-    const route = await this.routesRepo.getRouteRow(auth.tenant_id, input.route_id);
-    if (!route) throw new NotFoundError('Route not found');
-    // The companion access layer verifies the volunteer BEHIND the link, so a
-    // link with nobody behind it can never pass the gate — refuse to mint one.
-    if (route.volunteer_person_id == null) {
-      throw new BadRequestError('Assign a volunteer to this route first. The link is personal.');
-    }
-    // Whether the 30-day expiry is enforced is a live workspace policy (Workspace → App).
-    // The date is always STORED at mint time; the setting decides whether it counts.
-    const expiryEnforced = await volunteerLinksExpire(this.routesRepo.db, auth.tenant_id);
-    const active =
-      route.share_token_hash != null &&
-      (!expiryEnforced ||
-        (route.share_token_expires_at != null && new Date(route.share_token_expires_at) > new Date()));
-    if (active && !input.regenerate) {
-      // A live link already exists; the raw token is never stored, so we can't return it. Tell the
-      // UI so it can offer copy-vs-regenerate. expires_at is null when the workspace disables expiry.
-      return { status: 'exists' as const, expires_at: expiryEnforced ? route.share_token_expires_at : null };
-    }
-    const rawToken = randomBytes(32).toString('base64url');
-    const hash = createHash('sha256').update(rawToken).digest('hex');
-    const expiresAt = new Date(Date.now() + SHARE_TOKEN_TTL_DAYS * MS_PER_DAY);
-    await this.routesRepo.db
-      .updateTable('delivery_routes')
-      .set({
-        share_token_hash: hash,
-        share_token_expires_at: expiresAt,
-        updatedby_id: auth.user_id,
-        updated_at: new Date(),
-      })
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', input.route_id)
-      .execute();
-    await this.logRouteActivity(undefined, auth, input.route_id, 'update', 'link_created', 'Volunteer link created');
-    return { status: 'minted' as const, token: rawToken, expires_at: expiryEnforced ? expiresAt.toISOString() : null };
-  }
-
-  public async revokeShareLink(auth: IAuthKeyPayload, routeId: string) {
-    const route = await this.routesRepo.getRouteRow(auth.tenant_id, routeId);
-    if (!route) throw new NotFoundError('Route not found');
-    await this.routesRepo.db
-      .updateTable('delivery_routes')
-      .set({ share_token_hash: null, share_token_expires_at: null, updatedby_id: auth.user_id, updated_at: new Date() })
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', routeId)
-      .execute();
-    return { id: routeId };
-  }
-
-  // ---- Public volunteer path (token is the credential) --------------------
-  public hashToken(rawToken: string): string {
-    return createHash('sha256').update(rawToken).digest('hex');
-  }
-
-  /**
-   * Resolve a route by token, enforce active/expiry, and return the volunteer-safe payload.
-   * The capability token says WHAT may be touched; the companion session (X-Companion-Session)
-   * proves WHO is touching it — both are required (COMPANION-APPS-PLAN.md §2).
-   */
-  public async getPublicRoute(rawToken: string, sessionToken: string | null) {
-    const route = await this.routesRepo.findByTokenHash(this.hashToken(rawToken));
-    if (!route) return null;
-    const expiryEnforced = await volunteerLinksExpire(this.routesRepo.db, String(route.tenant_id));
-    if (!this.isTokenUsable(route, expiryEnforced)) return null;
-    await this.requireCompanionSession(route, sessionToken);
-    const tenantId = String(route.tenant_id);
-    const stops = await this.stopsRepo.getStopsForRoute(tenantId, String(route.id));
-    const orgName = await publicOrgName(tenantId);
-    return this.publicRoutePayload(route, stops, orgName);
-  }
-
-  public async publicStopAction(
-    rawToken: string,
-    stopId: string,
-    action: 'deliver' | 'skip' | 'defer' | 'undo',
-    reason: string | null,
-    sessionToken: string | null,
-    opId: string | null,
-  ) {
-    const route = await this.routesRepo.findByTokenHash(this.hashToken(rawToken));
-    if (!route) return null;
-    const enforceExpiry = await volunteerLinksExpire(this.routesRepo.db, String(route.tenant_id));
-    if (!this.isTokenUsable(route, enforceExpiry)) return null;
-    await this.requireCompanionSession(route, sessionToken);
-    const tenantId = String(route.tenant_id);
-    const routeId = String(route.id);
-    const actor: IAuthKeyPayload = {
-      tenant_id: tenantId,
-      user_id: String(route.createdby_id),
-      session_id: 'volunteer-link',
-    };
-    await this.routesRepo.transaction().execute(async (trx) => {
-      // Idempotency ledger (companion_ops, scope 'deliveries'): claim the opId
-      // inside the SAME transaction as the action, so claim + apply commit or
-      // roll back together. A replayed opId conflicts, applies nothing, and
-      // falls through to return the current authoritative payload — this is
-      // what makes a retried "defer" move the stop once, not twice.
-      if (opId) {
-        const claimed = await trx
-          .insertInto('companion_ops')
-          .values({ tenant_id: tenantId, op_id: opId, scope: 'deliveries' })
-          .onConflict((oc) => oc.columns(['tenant_id', 'op_id']).doNothing())
-          .returning('op_id')
-          .executeTakeFirst();
-        if (!claimed) return;
-      }
-      const stop = await trx
-        .selectFrom('delivery_route_stops')
-        .selectAll()
-        .where('tenant_id', '=', tenantId)
-        .where('id', '=', stopId)
-        .where('route_id', '=', routeId)
-        .executeTakeFirst();
-      if (!stop) throw new NotFoundError('Stop not found');
-
-      if (action === 'defer') {
-        await this.deferStop(trx, actor, routeId, stopId);
-      } else if (action === 'undo') {
-        await this.undoStop(trx, actor, routeId, stopId);
-      } else {
-        await this.applyStopTransition(trx, actor, routeId, stopId, action, reason, 'volunteer_link');
-      }
-    });
-    const stops = await this.stopsRepo.getStopsForRoute(tenantId, routeId);
-    const fresh = await this.routesRepo.getRouteRow(tenantId, routeId);
-    const orgName = await publicOrgName(tenantId);
-    return fresh ? this.publicRoutePayload(fresh, stops, orgName) : null;
-  }
-
-  /**
-   * The volunteer-identity gate on every public data request. Throws
-   * UnauthorizedError (401 — no/invalid device session, the gate re-verifies)
-   * or ForbiddenError (403 — verified but not yet admin-approved); the route
-   * handler passes those two statuses through so the companion gate can render
-   * its verify/pending states, and keeps the uniform 404 for dead tokens.
-   */
-  private async requireCompanionSession(
-    route: { tenant_id: string } & Record<string, unknown>,
-    sessionToken: string | null,
-  ): Promise<void> {
-    const volunteerId = route['volunteer_person_id'];
-    await this.companionAccess.requireSession(sessionToken, {
-      tenant_id: String(route.tenant_id),
-      volunteer_person_id: volunteerId == null ? null : String(volunteerId),
-    });
-  }
-
-  // ---- Shared transition helpers ------------------------------------------
   /**
    * Fire the `sign_delivered` automation trigger for requests that just reached 'delivered'.
    * Enrollment is person-based, so a request without a requester (`person_id` null — e.g. a
@@ -1747,386 +788,6 @@ export class DeliveriesController {
     } catch (err) {
       logger.error({ err }, 'Failed to trigger sign_delivered workflows');
     }
-  }
-
-  private async applyStopTransition(
-    trx: Transaction<Models>,
-    auth: IAuthKeyPayload,
-    routeId: string,
-    stopId: string,
-    action: 'deliver' | 'skip',
-    reason: string | null,
-    via: StopVia,
-  ): Promise<void> {
-    const stop = await trx
-      .selectFrom('delivery_route_stops')
-      .selectAll()
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', stopId)
-      .where('route_id', '=', routeId)
-      .executeTakeFirst();
-    if (!stop) throw new NotFoundError('Stop not found');
-
-    const now = new Date();
-    if (action === 'deliver') {
-      await trx
-        .updateTable('delivery_route_stops')
-        .set({
-          status: 'delivered',
-          reason: null,
-          acted_at: now,
-          acted_via: via,
-          updatedby_id: auth.user_id,
-          updated_at: now,
-        })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', stopId)
-        .execute();
-      await trx
-        .updateTable('delivery_requests')
-        .set({ status: 'delivered', skip_reason: null, updatedby_id: auth.user_id, updated_at: now })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', String(stop.request_id))
-        .execute();
-      // A pending stop implies the request was 'approved' (the derived-routed invariant), so
-      // reaching here is always a genuine transition to delivered.
-      await this.triggerSignDeliveredWorkflows(trx, auth.tenant_id, [String(stop.request_id)]);
-    } else {
-      const skipReason = reason ?? 'Other';
-      await trx
-        .updateTable('delivery_route_stops')
-        .set({
-          status: 'skipped',
-          reason: skipReason,
-          acted_at: now,
-          acted_via: via,
-          updatedby_id: auth.user_id,
-          updated_at: now,
-        })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', stopId)
-        .execute();
-      // A skipped house returns to the planning pool automatically.
-      await trx
-        .updateTable('delivery_requests')
-        .set({ status: 'approved', skip_reason: skipReason, updatedby_id: auth.user_id, updated_at: now })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', String(stop.request_id))
-        .execute();
-    }
-
-    await this.advanceRouteStatus(trx, auth, routeId, via);
-    const message =
-      action === 'deliver'
-        ? `Stop ${stop.seq} delivered${via === 'volunteer_link' ? ' via volunteer link' : ''}`
-        : `Stop ${stop.seq} skipped: ${(reason ?? 'Other').toLowerCase()}${via === 'volunteer_link' ? ' via volunteer link' : ''}`;
-    await this.logRouteActivity(
-      trx,
-      auth,
-      routeId,
-      'update',
-      action === 'deliver' ? 'stop_delivered' : 'stop_skipped',
-      message,
-      via,
-    );
-  }
-
-  private async deferStop(
-    trx: Transaction<Models>,
-    auth: IAuthKeyPayload,
-    routeId: string,
-    stopId: string,
-  ): Promise<void> {
-    const stops = await trx
-      .selectFrom('delivery_route_stops')
-      .select(['id', 'seq', 'status'])
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('route_id', '=', routeId)
-      .orderBy('seq', 'asc')
-      .execute();
-    const target = stops.find((s) => String(s.id) === stopId);
-    if (!target || target.status !== 'pending') return;
-    // Move the target to the end: rebuild the order with it last, then renumber via a temp offset.
-    const others = stops.filter((s) => String(s.id) !== stopId);
-    const newOrder = [...others.map((s) => String(s.id)), stopId];
-    await this.applySeqOrder(trx, auth.tenant_id, newOrder);
-    await this.renumberAndRecompute(trx, auth, routeId);
-    await this.logRouteActivity(
-      trx,
-      auth,
-      routeId,
-      'update',
-      'stop_deferred',
-      'Stop moved to the end of the route',
-      'volunteer_link',
-    );
-  }
-
-  private async undoStop(
-    trx: Transaction<Models>,
-    auth: IAuthKeyPayload,
-    routeId: string,
-    stopId: string,
-  ): Promise<void> {
-    const stop = await trx
-      .selectFrom('delivery_route_stops')
-      .selectAll()
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', stopId)
-      .where('route_id', '=', routeId)
-      .executeTakeFirst();
-    if (!stop) throw new NotFoundError('Stop not found');
-    const now = new Date();
-    await trx
-      .updateTable('delivery_route_stops')
-      .set({
-        status: 'pending',
-        reason: null,
-        acted_at: null,
-        acted_via: null,
-        updatedby_id: auth.user_id,
-        updated_at: now,
-      })
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', stopId)
-      .execute();
-    // Restore the request to the pool state (approved) — undo clears the delivered/skipped result.
-    await trx
-      .updateTable('delivery_requests')
-      .set({ status: 'approved', skip_reason: null, updatedby_id: auth.user_id, updated_at: now })
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', String(stop.request_id))
-      .execute();
-    // Undoing from a completed route reopens it to in_progress.
-    await trx
-      .updateTable('delivery_routes')
-      .set({ status: 'in_progress', updatedby_id: auth.user_id, updated_at: now })
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', routeId)
-      .where('status', '=', 'completed')
-      .execute();
-    await this.logRouteActivity(trx, auth, routeId, 'update', 'stop_undo', `Stop ${stop.seq} undone`, 'volunteer_link');
-  }
-
-  /** First action flips assigned → in_progress; all-terminal auto-completes the route. */
-  private async advanceRouteStatus(
-    trx: Transaction<Models>,
-    auth: IAuthKeyPayload,
-    routeId: string,
-    _via: StopVia,
-  ): Promise<void> {
-    const now = new Date();
-    const counts = await trx
-      .selectFrom('delivery_route_stops')
-      .select([
-        ({ fn }) => fn.count<number>('id').as('total'),
-        ({ fn }) => fn.count<number>('id').filterWhere('status', '=', 'pending').as('pending'),
-      ])
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('route_id', '=', routeId)
-      .executeTakeFirst();
-    const total = Number(counts?.total ?? 0);
-    const pending = Number(counts?.pending ?? 0);
-    if (total > 0 && pending === 0) {
-      await trx
-        .updateTable('delivery_routes')
-        .set({ status: 'completed', updatedby_id: auth.user_id, updated_at: now })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', routeId)
-        .execute();
-      await this.logRouteActivity(
-        trx,
-        auth,
-        routeId,
-        'close',
-        'route_completed',
-        'Route auto-completed: every stop handled',
-      );
-    } else {
-      await trx
-        .updateTable('delivery_routes')
-        .set({ status: 'in_progress', updatedby_id: auth.user_id, updated_at: now })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', routeId)
-        .where('status', 'in', ['assigned', 'draft'])
-        .execute();
-    }
-  }
-
-  private async setStopSeq(trx: Transaction<Models>, tenantId: string, stopId: string, seq: number): Promise<void> {
-    await trx
-      .updateTable('delivery_route_stops')
-      .set({ seq })
-      .where('tenant_id', '=', tenantId)
-      .where('id', '=', stopId)
-      .execute();
-  }
-
-  /** Assign contiguous 1..n seq values to the given ordered stop ids, avoiding unique collisions. */
-  private async applySeqOrder(trx: Transaction<Models>, tenantId: string, orderedIds: string[]): Promise<void> {
-    const OFFSET = 100000;
-    for (let i = 0; i < orderedIds.length; i++) {
-      await this.setStopSeq(trx, tenantId, orderedIds[i] ?? '', OFFSET + i);
-    }
-    for (let i = 0; i < orderedIds.length; i++) {
-      await this.setStopSeq(trx, tenantId, orderedIds[i] ?? '', i + 1);
-    }
-  }
-
-  /** Renumber stops to contiguous seq in current order and recompute leg times + route estimate. */
-  private async renumberAndRecompute(trx: Transaction<Models>, auth: IAuthKeyPayload, routeId: string): Promise<void> {
-    const route = await trx
-      .selectFrom('delivery_routes')
-      .selectAll()
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', routeId)
-      .executeTakeFirst();
-    if (!route) return;
-    const params = this.paramsFromRoute(route.params);
-    const start: LatLng = { lat: Number(route.start_lat), lng: Number(route.start_lng) };
-    const stops = await this.stopsRepo.getStopsForRoute(auth.tenant_id, routeId, trx);
-    // Ensure contiguous seq.
-    await this.applySeqOrder(
-      trx,
-      auth.tenant_id,
-      stops.map((s) => s.id),
-    );
-
-    let cursor: LatLng = start;
-    let totalMinutes = 0;
-    let totalKm = 0;
-    for (const stop of stops) {
-      const point: LatLng = { lat: stop.lat ?? start.lat, lng: stop.lng ?? start.lng };
-      const leg = legMinutes(cursor, point, params.avgSpeedKmh);
-      await trx
-        .updateTable('delivery_route_stops')
-        .set({ leg_minutes: Math.round(leg * 10) / 10 })
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', stop.id)
-        .execute();
-      totalMinutes += leg + params.serviceMinutes;
-      totalKm += roadKm(cursor, point);
-      cursor = point;
-    }
-    if (params.includeReturnLeg && stops.length > 0) totalKm += roadKm(cursor, start);
-    await trx
-      .updateTable('delivery_routes')
-      .set({
-        est_minutes: Math.round(totalMinutes * 10) / 10,
-        est_km: Math.round(totalKm * 10) / 10,
-        updated_at: new Date(),
-      })
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', routeId)
-      .execute();
-  }
-
-  private paramsFromRoute(raw: unknown): RouteParamsSnapshot {
-    const obj = typeof raw === 'string' ? safeParse(raw) : raw;
-    const rec = (obj ?? {}) as Record<string, unknown>;
-    return {
-      serviceMinutes: typeof rec['serviceMinutes'] === 'number' ? rec['serviceMinutes'] : SERVICE_MINUTES_PER_STOP,
-      avgSpeedKmh: typeof rec['avgSpeedKmh'] === 'number' ? rec['avgSpeedKmh'] : AVG_SPEED_KMH,
-      includeReturnLeg: rec['includeReturnLeg'] === true,
-      drivers: typeof rec['drivers'] === 'number' ? rec['drivers'] : null,
-    };
-  }
-
-  private async readRouteProgress(trx: Transaction<Models>, tenantId: string, routeId: string) {
-    const route = await trx
-      .selectFrom('delivery_routes')
-      .selectAll()
-      .where('tenant_id', '=', tenantId)
-      .where('id', '=', routeId)
-      .executeTakeFirst();
-    const stops = await this.stopsRepo.getStopsForRoute(tenantId, routeId, trx);
-    return {
-      id: routeId,
-      status: route ? String(route.status) : 'unknown',
-      est_minutes: route ? Number(route.est_minutes) : 0,
-      est_km: route ? Number(route.est_km) : 0,
-      stops,
-    };
-  }
-
-  /** `enforceExpiry` is the live Workspace → App policy (volunteerLinksExpire) — when the
-   * workspace disables expiry, a link stays usable for the life of the route (until revoked
-   * or the route is canceled). */
-  private isTokenUsable(
-    route: { status?: unknown; share_token_expires_at?: unknown } | undefined,
-    enforceExpiry: boolean,
-  ): route is {
-    id: string;
-    tenant_id: string;
-    createdby_id: string;
-    status: string;
-    share_token_expires_at: Date | string | null;
-  } & Record<string, unknown> {
-    if (!route) return false;
-    const status = String((route as Record<string, unknown>)['status']);
-    if (status === 'canceled') return false;
-    if (!enforceExpiry) return true;
-    const exp = (route as Record<string, unknown>)['share_token_expires_at'];
-    if (!exp) return false;
-    return new Date(String(exp)) > new Date();
-  }
-
-  private publicRoutePayload(
-    route: Record<string, unknown>,
-    stops: Awaited<ReturnType<DeliveryRouteStopsRepo['getStopsForRoute']>>,
-    orgName: string,
-  ) {
-    const delivered = stops.filter((s) => s.status === 'delivered').length;
-    // Data minimization (spec §4.4): first name + address only. No email/phone/notes/person_id.
-    return {
-      organization_name: orgName,
-      route_name: String(route['name'] ?? 'Delivery route'),
-      status: String(route['status'] ?? 'assigned'),
-      start: { lat: Number(route['start_lat']), lng: Number(route['start_lng']) },
-      stops_total: stops.length,
-      stops_delivered: delivered,
-      stops: stops.map((s) => ({
-        id: s.id,
-        seq: s.seq,
-        first_name: s.first_name ?? 'Neighbour',
-        address: s.address,
-        lat: s.lat,
-        lng: s.lng,
-        status: s.status,
-        reason: s.reason,
-        acted_at: s.acted_at,
-      })),
-    };
-  }
-
-  private sanitizeRoute(
-    route: Record<string, unknown>,
-    stops: Awaited<ReturnType<DeliveryRouteStopsRepo['getStopsForRoute']>>,
-    volunteerName: string | null,
-    expiryEnforced: boolean,
-  ) {
-    // link_expires_at is a POLICY-shaped value: null when the workspace disables expiry, so the
-    // UI never shows a date that won't be enforced.
-    const expiresAt = expiryEnforced ? route['share_token_expires_at'] : null;
-    const linkActive =
-      route['share_token_hash'] != null &&
-      (!expiryEnforced || (!!expiresAt && new Date(String(expiresAt)) > new Date()));
-    return {
-      id: String(route['id']),
-      name: String(route['name'] ?? ''),
-      status: String(route['status'] ?? 'draft'),
-      volunteer_person_id: route['volunteer_person_id'] != null ? String(route['volunteer_person_id']) : null,
-      volunteer_name: volunteerName,
-      start_address: String(route['start_address'] ?? ''),
-      start_lat: Number(route['start_lat']),
-      start_lng: Number(route['start_lng']),
-      est_minutes: Number(route['est_minutes'] ?? 0),
-      est_km: Number(route['est_km'] ?? 0),
-      scheduled_for: (route['scheduled_for'] as Date | string | null) ?? null,
-      link_active: linkActive,
-      link_expires_at: (expiresAt as Date | string | null) ?? null,
-      stops,
-    };
   }
 
   /**
@@ -2190,45 +851,5 @@ export class DeliveriesController {
     } catch (err) {
       logger.error({ err }, 'Failed to log yard sign standing activity');
     }
-  }
-
-  private async logRouteActivity(
-    trxOrAny: Transaction<Models> | unknown,
-    auth: IAuthKeyPayload,
-    routeId: string,
-    activity: 'create' | 'update' | 'assign' | 'unassign' | 'close' | 'reopen' | 'delete',
-    action: string,
-    message: string,
-    via?: StopVia,
-  ): Promise<void> {
-    const trx = isTransaction(trxOrAny) ? trxOrAny : undefined;
-    try {
-      await this.userActivity.log(
-        {
-          tenant_id: auth.tenant_id,
-          user_id: auth.user_id,
-          activity,
-          entity: 'delivery_routes',
-          entity_id: routeId,
-          quantity: 1,
-          metadata: { action, message, entity_label: message, via: via ?? 'staff' },
-        },
-        trx,
-      );
-    } catch (err) {
-      logger.error({ err }, 'Failed to log delivery route activity');
-    }
-  }
-}
-
-function isTransaction(value: unknown): value is Transaction<Models> {
-  return typeof value === 'object' && value !== null && 'selectFrom' in (value as Record<string, unknown>);
-}
-
-function safeParse(raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return {};
   }
 }

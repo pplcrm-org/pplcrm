@@ -40,10 +40,9 @@ import { SmsService } from '../../lib/sms/sms.service';
 import { maskEmail, maskPhone, normalizeE164 } from '../../lib/sms/phone';
 import { generateToken, hashToken } from '../../lib/token-hash';
 import { UserActivityRepo } from '../../lib/user-activity.repo';
-import { turfAssignmentExpiry, volunteerLinksExpire } from '../../lib/volunteer-link-policy';
+import { turfAssignmentExpiry } from '../../lib/volunteer-link-policy';
 import { env } from '../../../env';
 import { TurfAssignmentsRepo, generateTurfToken } from '../canvassing/repositories/turf-assignments.repo';
-import { DeliveryRoutesRepo } from '../deliveries/repositories/delivery-routes.repo';
 import { NotificationsRepo } from '../notifications/repositories/notifications.repo';
 import { ApprovalTokensRepo } from './repositories/approval-tokens.repo';
 import { CompanionSessionsRepo } from './repositories/companion-sessions.repo';
@@ -180,7 +179,6 @@ export class CompanionAccessController {
   private mailService = new TransactionalEmailService({ defaultAudience: 'account' });
   private notificationsRepo = new NotificationsRepo();
   private organizerTokensRepo = new OrganizerTokensRepo();
-  private routesRepo = new DeliveryRoutesRepo();
   private sessionsRepo = new CompanionSessionsRepo();
   private smsService = new SmsService();
   private turfAssignmentsRepo = new TurfAssignmentsRepo();
@@ -1168,21 +1166,10 @@ export class CompanionAccessController {
       };
     }
 
-    // kind === 'route' — mirrors DeliveriesController.isTokenUsable (uniform
-    // dead-link semantics: canceled always fails; missing/past expiry fails only
-    // while the workspace enforces link expiry — a live policy, Workspace → App).
-    const route = await this.routesRepo.findByTokenHash(hashToken(token));
-    if (!route) return null;
-    if (String(route.status) === 'canceled') return null;
-    if (await volunteerLinksExpire(this.routesRepo.db, String(route.tenant_id))) {
-      const exp = route.share_token_expires_at;
-      if (!exp || new Date(String(exp)) <= new Date()) return null;
-    }
-    return {
-      tenant_id: String(route.tenant_id),
-      volunteer_person_id: route.volunteer_person_id == null ? null : String(route.volunteer_person_id),
-      organizer_id: String(route.createdby_id),
-    };
+    // kind === 'route' — the driving-route links retired with the routes themselves
+    // (turfs-absorb-deliveries Phase 4). Every old /r/:token link resolves dead; the
+    // replacement links were sent when the outings were re-assigned as turfs.
+    return null;
   }
 
   /**

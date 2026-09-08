@@ -33,8 +33,10 @@ export const appRoutes: Route[] = [
     loadComponent: () => import('./canvass/canvass-page').then((m) => m.CanvassPage),
   },
   {
+    // The old delivery-route links: the route system retired (Phase 4), so this renders
+    // "this link has moved" and points at the canvass home instead of a dead 404.
     path: 'r/:token',
-    loadComponent: () => import('./deliveries/route-page').then((m) => m.RoutePage),
+    loadComponent: () => import('./deliveries/route-moved-page').then((m) => m.RouteMovedPage),
   },
   {
     path: 'j/:code',

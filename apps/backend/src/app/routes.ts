@@ -20,7 +20,6 @@ import postmarkWebhookRoute from './modules/mail/routes/postmark-webhook.route';
 import donationsWebhookRoute from './modules/donations/routes/donations-webhook.route';
 import zapierInboundRoute from './modules/zapier/zapier-inbound.route';
 import canvassPublicRoute from './modules/canvassing/routes/canvass-public.route';
-import deliveriesPublicRoute from './modules/deliveries/routes/deliveries-public.route';
 import companionPublicRoute from './modules/companion-access/routes/companion-public.route';
 import donorPortalPublicRoute from './modules/donor-portal/routes/donor-portal-public.route';
 
@@ -56,9 +55,6 @@ export const routes: FastifyPluginCallback = (fastify, _opts, done) => {
 
   // Register public RSVP event pages REST routes
   fastify.register(eventsPublicRoute, { prefix: '/api/event-pages' });
-
-  // Register public volunteer delivery-route pages (token is the credential, §14)
-  fastify.register(deliveriesPublicRoute, { prefix: '/api/deliveries' });
 
   // Companion access layer: verify + approve gate for both volunteer companions
   fastify.register(companionPublicRoute, { prefix: '/api/companion' });

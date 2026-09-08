@@ -138,11 +138,7 @@
       </td>
       <td class="text-base-content/70">{{ sourceLabel(row.source) }}</td>
       <td>
-        @if (row.route_id) {
-        <a class="link link-hover text-primary" [routerLink]="['/deliveries/routes', row.route_id]">
-          {{ row.route_name || 'Route' }}
-        </a>
-        } @else if (row.turf_id && row.status !== 'delivered') {
+        @if (row.turf_id && row.status !== 'delivered') {
         <!-- The stored out-for-delivery pointer: a delivery outing (turf) is carrying this
              request right now. -->
         <a class="link link-hover text-primary" [routerLink]="['/canvassing', row.turf_id]">

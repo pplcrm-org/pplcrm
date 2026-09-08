@@ -21,6 +21,7 @@ apps/
           2026-08-28-zapier-rest-hooks.ts
           2026-09-06-turf-modes-and-request-purpose.ts
           2026-09-07-delivery-request-turf-pointer.ts
+          2026-09-08-retire-delivery-routes.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -241,10 +242,6 @@ apps/
           deliveries/
             repositories/
               delivery-requests.repo.ts
-              delivery-route-stops.repo.ts
-              delivery-routes.repo.ts
-            routes/
-              deliveries-public.route.ts
             controller.ts
             trpc.router.ts
           demo/

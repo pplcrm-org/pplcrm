@@ -3,12 +3,9 @@ import { Service } from '@angular/core';
 import type {
   AddDeliveryRequestType,
   AddDeliveryRequestsFromListType,
-  CommitDeliveriesType,
   DeliveryRequestStatus,
   ExportCsvInputType,
   ExportCsvResponseType,
-  PlanDeliveriesType,
-  SetRouteDefaultsType,
   UpdateDeliveryRequestType,
   getAllOptionsType,
 } from '../../../../../../../libs/common/src';
@@ -17,11 +14,11 @@ import { AbstractAPIService } from '../../../services/api/abstract-api.service';
 import { RouterOutputs } from '../../../services/api/trpc-types';
 
 export type DeliveryRequestRow = RouterOutputs['deliveries']['getAllRequests']['rows'][number];
-export type DeliveryPlanPreview = RouterOutputs['deliveries']['previewPlan'];
 
 /**
- * Deliveries requests + planning service (spec §14). Backs the requests grid and the plan page.
- * Route CRUD lives in DeliveriesRoutesService; both point at the same `deliveries` tRPC router.
+ * Delivery-requests service: the Requests tab's grid, counts, standing reads and bulk
+ * intake. The old planning/routes half retired with the driving-route system
+ * (turfs-absorb-deliveries Phase 4) — delivery work goes out as delivery-mode turfs.
  */
 @Service()
 export class DeliveriesRequestsService extends AbstractAPIService<'delivery_requests', UpdateDeliveryRequestType> {
@@ -64,22 +61,6 @@ export class DeliveriesRequestsService extends AbstractAPIService<'delivery_requ
       { household_id: householdId, campaign_id: campaignId },
       { signal: this.ac.signal },
     );
-  }
-
-  public getRouteDefaults(): Promise<RouterOutputs['deliveries']['getRouteDefaults']> {
-    return this.api.deliveries.getRouteDefaults.query(undefined, { signal: this.ac.signal });
-  }
-
-  public setRouteDefaults(input: SetRouteDefaultsType): Promise<RouterOutputs['deliveries']['setRouteDefaults']> {
-    return this.api.deliveries.setRouteDefaults.mutate(input);
-  }
-
-  public previewPlan(input: PlanDeliveriesType): Promise<DeliveryPlanPreview> {
-    return this.api.deliveries.previewPlan.mutate(input);
-  }
-
-  public commitPlan(input: CommitDeliveriesType): Promise<RouterOutputs['deliveries']['commitPlan']> {
-    return this.api.deliveries.commitPlan.mutate(input);
   }
 
   public count(): Promise<number> {

@@ -25,7 +25,6 @@ import { BillingSettingsComponent } from './billing/billing-settings';
 import { BoundariesSettingsComponent } from './boundaries/boundaries-settings';
 import { CampaignsSettingsComponent } from './campaigns/campaigns-settings';
 import { ModulesSettings } from './modules/modules-settings';
-import { DeliveriesSettingsComponent } from './deliveries/deliveries-settings';
 import { DomainSettingsComponent } from './domains/domains-settings';
 import { PhoneVerification } from './phone/phone-verification';
 import { DonationsSettingsComponent } from './donations/donations-settings';
@@ -81,7 +80,6 @@ interface NavGroup {
     BoundariesSettingsComponent,
     CampaignsSettingsComponent,
     ModulesSettings,
-    DeliveriesSettingsComponent,
     DomainSettingsComponent,
     DonationsSettingsComponent,
     AccountSettingsComponent,
@@ -242,7 +240,6 @@ export class SettingsPage implements OnInit {
     const plan = effectivePlanKey(user?.tenant_plan, user?.tenant_demo_mode_at);
     if (sectionId === 'email-sync') return !planAllowsFeature(plan, 'inbox');
     if (sectionId === 'donations') return !planAllowsFeature(plan, 'donations');
-    if (sectionId === 'deliveries') return !planAllowsFeature(plan, 'deliveries');
     return false;
   }
 

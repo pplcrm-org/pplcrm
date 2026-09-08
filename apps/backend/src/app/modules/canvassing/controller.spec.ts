@@ -1121,7 +1121,7 @@ describe('CanvassingController', () => {
     expect(JSON.stringify(companion)).not.toMatch(/@example\.com/);
   });
 
-  it('a canvasser delivering the sign closes the driver’s stop, and undo puts both back', async () => {
+  it('a canvasser delivering the sign flips the request, and undo puts it back', async () => {
     const householdId = s.householdIds[0]!;
     const request = await db
       .insertInto('delivery_requests')
@@ -1131,35 +1131,6 @@ describe('CanvassingController', () => {
         household_id: householdId,
         source: 'manual',
         status: 'approved',
-        createdby_id: s.userId,
-        updatedby_id: s.userId,
-      })
-      .returning('id')
-      .executeTakeFirstOrThrow();
-    // A driver is already routed to this house — the case the whole feature exists to stop.
-    const route = await db
-      .insertInto('delivery_routes')
-      .values({
-        tenant_id: s.tenantId,
-        campaign_id: s.campaignId,
-        name: 'Saturday run',
-        status: 'assigned',
-        start_address: '1 Campaign HQ, Ottawa',
-        start_lat: 45.42,
-        start_lng: -75.69,
-        createdby_id: s.userId,
-        updatedby_id: s.userId,
-      })
-      .returning('id')
-      .executeTakeFirstOrThrow();
-    const stop = await db
-      .insertInto('delivery_route_stops')
-      .values({
-        tenant_id: s.tenantId,
-        route_id: String(route.id),
-        request_id: String(request.id),
-        seq: 1,
-        status: 'pending',
         createdby_id: s.userId,
         updatedby_id: s.userId,
       })
@@ -1195,30 +1166,13 @@ describe('CanvassingController', () => {
         .where('tenant_id', '=', s.tenantId)
         .where('id', '=', String(request.id))
         .executeTakeFirst();
-    const readStop = async () =>
-      db
-        .selectFrom('delivery_route_stops')
-        .select(['status', 'acted_via'])
-        .where('tenant_id', '=', s.tenantId)
-        .where('id', '=', String(stop.id))
-        .executeTakeFirst();
 
     expect((await readRequest())?.status).toBe('delivered');
-    // The driver's stop is closed, so nobody is sent to a house that already has its sign.
-    expect((await readStop())?.status).toBe('delivered');
-    // Every stop is terminal, so the route completed itself exactly as it does for a driver.
-    const routeRow = await db
-      .selectFrom('delivery_routes')
-      .select(['status'])
-      .where('tenant_id', '=', s.tenantId)
-      .where('id', '=', String(route.id))
-      .executeTakeFirst();
-    expect(routeRow?.status).toBe('completed');
     // And the door says so on the next load, instead of still asking for a sign.
     const after = await controller.getCompanionTurf(token, session);
     expect(after.households.find((h) => h.id === householdId)?.yard_sign?.status).toBe('delivered');
 
-    // Undo returns the sign to owed and reopens the stop AND its route.
+    // Undo returns the sign to owed.
     await controller.postCompanionResults(token, session, [
       {
         op_id: 'op-sign-2',
@@ -1228,7 +1182,6 @@ describe('CanvassingController', () => {
       },
     ]);
     expect((await readRequest())?.status).toBe('approved');
-    expect((await readStop())?.status).toBe('pending');
   });
 
   it('records deceased, a data-error task, and the senior band from the door', async () => {

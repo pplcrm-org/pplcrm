@@ -65,6 +65,8 @@ async function cleanTenant(db: any, tenantId: string) {
   await db.deleteFrom('delivery_route_stops').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('delivery_requests').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('delivery_routes').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('turf_assignments').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('turfs').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('persons').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('households').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('campaigns').where('tenant_id', '=', tenantId).execute();
@@ -271,7 +273,7 @@ describe('CampaignsController', () => {
     expect(ctx.active_campaign_id).toBe(officeId);
   });
 
-  it('archiving declines the campaign’s open yard-sign requests and cancels its live routes', async () => {
+  it('archiving declines the campaign’s open yard-sign requests and retires its delivery outings', async () => {
     await controller.addCampaign(
       { name: 'Sweep Race', kind: 'election', description: null, notes: null, startdate: null, enddate: null },
       auth,
@@ -298,61 +300,42 @@ describe('CampaignsController', () => {
       })
       .returning('id')
       .executeTakeFirstOrThrow();
-    const route = await db
-      .insertInto('delivery_routes')
+    // The request is out with an active delivery outing (turf) of the same campaign.
+    const turf = await db
+      .insertInto('turfs')
       .values({
         tenant_id: tenantId,
         campaign_id: electionId,
-        name: 'Sweep route',
-        status: 'assigned',
-        start_address: '1 Test Way',
-        start_lat: 45.0,
-        start_lng: -75.0,
-        est_minutes: 10,
-        est_km: 2,
-        params: JSON.stringify({}),
+        name: 'Sweep outing',
+        status: 'active',
+        mode: 'delivery',
+        travel: 'drive',
+        delivery_purpose: 'yard_sign',
         createdby_id: userId,
         updatedby_id: userId,
       })
       .returning('id')
       .executeTakeFirstOrThrow();
-    const stop = await db
-      .insertInto('delivery_route_stops')
-      .values({
-        tenant_id: tenantId,
-        route_id: route.id,
-        request_id: request.id,
-        seq: 1,
-        leg_minutes: 2,
-        status: 'pending',
-        createdby_id: userId,
-        updatedby_id: userId,
-      })
-      .returning('id')
-      .executeTakeFirstOrThrow();
+    await db
+      .updateTable('delivery_requests')
+      .set({ turf_id: turf.id })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', request.id)
+      .execute();
 
     await controller.archive(electionId, auth);
 
     // Archived campaign no longer holds the household's one-open-request slot: the request is
-    // declined, its stop skipped, and the route canceled.
+    // declined with its out-for-delivery pointer cleared, and the outing is retired.
     const afterRequest = await db
       .selectFrom('delivery_requests')
-      .select('status')
+      .select(['status', 'turf_id'])
       .where('id', '=', request.id)
       .executeTakeFirstOrThrow();
     expect(afterRequest.status).toBe('declined');
-    const afterStop = await db
-      .selectFrom('delivery_route_stops')
-      .select('status')
-      .where('id', '=', stop.id)
-      .executeTakeFirstOrThrow();
-    expect(afterStop.status).toBe('skipped');
-    const afterRoute = await db
-      .selectFrom('delivery_routes')
-      .select('status')
-      .where('id', '=', route.id)
-      .executeTakeFirstOrThrow();
-    expect(afterRoute.status).toBe('canceled');
+    expect(afterRequest.turf_id).toBeNull();
+    const afterTurf = await db.selectFrom('turfs').select('status').where('id', '=', turf.id).executeTakeFirstOrThrow();
+    expect(afterTurf.status).toBe('retired');
 
     // The household's activity feed records the auto-decline (honest attribution).
     const activity = await db

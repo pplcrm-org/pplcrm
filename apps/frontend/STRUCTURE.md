@@ -106,20 +106,10 @@ apps/
           deliveries/
             services/
               deliveries-requests-service.ts
-              deliveries-routes-service.ts
             ui/
               add-from-list-dialog.ts
-              assign-volunteer-dialog.html
-              assign-volunteer-dialog.ts
-              deliveries-nav.ts
-              deliveries-plan.html
-              deliveries-plan.ts
               deliveries-requests.html
               deliveries-requests.ts
-              deliveries-route-detail.html
-              deliveries-route-detail.ts
-              deliveries-routes.html
-              deliveries-routes.ts
               request-source-label.ts
               yard-sign-standing.html
               yard-sign-standing.ts
@@ -339,8 +329,6 @@ apps/
             campaigns/
               campaigns-settings.html
               campaigns-settings.ts
-            deliveries/
-              deliveries-settings.ts
             domains/
               domains-settings.html
               domains-settings.ts

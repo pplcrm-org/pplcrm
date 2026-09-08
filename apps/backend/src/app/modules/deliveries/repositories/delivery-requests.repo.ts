@@ -32,8 +32,6 @@ export type DeliveryRequestGridRow = {
   household_id: string;
   address: string;
   geocoding_status: string | null;
-  route_id: string | null;
-  route_name: string | null;
   /** The delivery turf carrying this request (stored pointer). On a delivered row it is
    *  provenance — which outing delivered it — rather than live state. */
   turf_id: string | null;
@@ -63,14 +61,6 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
         .selectFrom('delivery_requests as dr')
         .innerJoin('households as h', 'h.id', 'dr.household_id')
         .leftJoin('persons as p', 'p.id', 'dr.person_id')
-        // The route link is derived from an active (pending) stop — not stored on the request.
-        .leftJoin('delivery_route_stops as active_stop', (join) =>
-          join
-            .onRef('active_stop.request_id', '=', 'dr.id')
-            .on('active_stop.tenant_id', '=', tenantId)
-            .on('active_stop.status', '=', 'pending'),
-        )
-        .leftJoin('delivery_routes as rt', 'rt.id', 'active_stop.route_id')
         // The delivery-turf pointer. Retired turfs are excluded the same way getSignStatus
         // excludes them: a name from a dead outing would read as live work.
         .leftJoin('turfs as tf', (join) =>
@@ -106,8 +96,6 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
         'dr.person_id as person_id',
         'dr.household_id as household_id',
         'h.geocoding_status as geocoding_status',
-        'active_stop.route_id as route_id',
-        'rt.name as route_name',
         'tf.id as turf_id',
         'tf.name as turf_name',
         COMPOSED_ADDRESS_SQL.as('address'),
@@ -131,8 +119,6 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
         household_id: String(r.household_id),
         address: r.address ?? '',
         geocoding_status: r.geocoding_status ?? null,
-        route_id: r.route_id != null ? String(r.route_id) : null,
-        route_name: r.route_name ?? null,
         turf_id: r.turf_id != null ? String(r.turf_id) : null,
         turf_name: r.turf_name != null ? String(r.turf_name) : null,
       })),
@@ -142,8 +128,8 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
 
   /**
    * The yard-sign standing for one household in one campaign context: the most recently touched
-   * request, with the requester's name and the derived active-route link (pending stop, never a
-   * stored flag). Backs the "Yard sign" control on the household and person pages.
+   * request, with the requester's name and the delivery outing carrying it (the stored
+   * turf pointer). Backs the "Yard sign" control on the household and person pages.
    */
   public async getSignStatus(
     tenantId: string,
@@ -159,8 +145,6 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
     updated_at: Date | string | null;
     person_id: string | null;
     person_name: string | null;
-    route_id: string | null;
-    route_name: string | null;
     turf_id: string | null;
     turf_name: string | null;
   } | null> {
@@ -168,15 +152,8 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
     const row = await db
       .selectFrom('delivery_requests as dr')
       .leftJoin('persons as p', 'p.id', 'dr.person_id')
-      .leftJoin('delivery_route_stops as active_stop', (join) =>
-        join
-          .onRef('active_stop.request_id', '=', 'dr.id')
-          .on('active_stop.tenant_id', '=', tenantId)
-          .on('active_stop.status', '=', 'pending'),
-      )
-      .leftJoin('delivery_routes as rt', 'rt.id', 'active_stop.route_id')
-      // The delivery outing carrying this request (pointer-column design) — the turf-era
-      // sibling of the pending-stop join above. Only an unretired turf reads as "out".
+      // The delivery outing carrying this request (pointer-column design).
+      // Only an unretired turf reads as "out".
       .leftJoin('turfs as tf', (join) =>
         join.onRef('tf.id', '=', 'dr.turf_id').on('tf.tenant_id', '=', tenantId).on('tf.status', '!=', 'retired'),
       )
@@ -195,8 +172,6 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
         'dr.updated_at as updated_at',
         'dr.person_id as person_id',
         sql<string>`NULLIF(TRIM(COALESCE(p.first_name, '') || ' ' || COALESCE(p.last_name, '')), '')`.as('person_name'),
-        'active_stop.route_id as route_id',
-        'rt.name as route_name',
         'tf.id as turf_id',
         'tf.name as turf_name',
       ])
@@ -213,8 +188,6 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
       updated_at: row.updated_at ?? null,
       person_id: row.person_id != null ? String(row.person_id) : null,
       person_name: row.person_name ?? null,
-      route_id: row.route_id != null ? String(row.route_id) : null,
-      route_name: row.route_name ?? null,
       turf_id: row.turf_id != null ? String(row.turf_id) : null,
       turf_name: row.turf_name ?? null,
     };
@@ -270,17 +243,6 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
       .where('dr.status', '=', 'approved')
       .$if(input.purpose !== 'both', (qb) => qb.where('dr.purpose', '=', input.purpose as 'yard_sign' | 'flyer'))
       .where('dr.turf_id', 'is', null)
-      .where(({ not, exists, selectFrom }) =>
-        not(
-          exists(
-            selectFrom('delivery_route_stops as s')
-              .select('s.id')
-              .whereRef('s.request_id', '=', 'dr.id')
-              .where('s.tenant_id', '=', input.tenant_id)
-              .where('s.status', '=', 'pending'),
-          ),
-        ),
-      )
       .select('dr.household_id')
       .distinct()
       .execute();
@@ -375,110 +337,9 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
       .where('h.geocoding_status', '=', 'success')
       .where('h.lat', 'is not', null)
       .where('h.lng', 'is not', null)
-      .where(({ not, exists, selectFrom }) =>
-        not(
-          exists(
-            selectFrom('delivery_route_stops as s')
-              .select('s.id')
-              .whereRef('s.request_id', '=', 'dr.id')
-              .where('s.tenant_id', '=', tenantId)
-              .where('s.status', '=', 'pending'),
-          ),
-        ),
-      )
       .select(({ fn }) => fn.count<number>('dr.id').as('n'))
       .executeTakeFirst();
     return Number(row?.n ?? 0);
-  }
-
-  /** Eligible requests with coordinates + display info, for the planner. */
-  public async getEligibleForPlanning(
-    tenantId: string,
-    limit: number,
-    trx?: Transaction<Models>,
-  ): Promise<Array<{ request_id: string; lat: number; lng: number; address: string; name: string | null }>> {
-    const db = trx ?? this.db;
-    const rows = await db
-      .selectFrom('delivery_requests as dr')
-      .innerJoin('households as h', 'h.id', 'dr.household_id')
-      .leftJoin('persons as p', 'p.id', 'dr.person_id')
-      .where('dr.tenant_id', '=', tenantId)
-      .where('dr.status', '=', 'approved')
-      // Out with a delivery turf — the route planner must not double-book it.
-      .where('dr.turf_id', 'is', null)
-      .where('h.geocoding_status', '=', 'success')
-      .where('h.lat', 'is not', null)
-      .where('h.lng', 'is not', null)
-      .where(({ not, exists, selectFrom }) =>
-        not(
-          exists(
-            selectFrom('delivery_route_stops as s')
-              .select('s.id')
-              .whereRef('s.request_id', '=', 'dr.id')
-              .where('s.tenant_id', '=', tenantId)
-              .where('s.status', '=', 'pending'),
-          ),
-        ),
-      )
-      .select([
-        'dr.id as request_id',
-        'h.lat as lat',
-        'h.lng as lng',
-        COMPOSED_ADDRESS_SQL.as('address'),
-        sql<string>`NULLIF(TRIM(COALESCE(p.first_name, '') || ' ' || COALESCE(p.last_name, '')), '')`.as('name'),
-      ])
-      .orderBy('dr.created_at', 'asc')
-      .limit(limit)
-      .execute();
-    return rows
-      .filter((r) => r.lat != null && r.lng != null)
-      .map((r) => ({
-        request_id: String(r.request_id),
-        lat: Number(r.lat),
-        lng: Number(r.lng),
-        address: r.address ?? '',
-        name: r.name ?? null,
-      }));
-  }
-
-  /** Re-check eligibility for a specific set of request ids in a commit transaction (concurrent-planner guard). */
-  public async getEligibleByIds(
-    tenantId: string,
-    ids: string[],
-    trx?: Transaction<Models>,
-  ): Promise<Array<{ request_id: string; lat: number; lng: number; address: string }>> {
-    if (ids.length === 0) return [];
-    const db = trx ?? this.db;
-    const rows = await db
-      .selectFrom('delivery_requests as dr')
-      .innerJoin('households as h', 'h.id', 'dr.household_id')
-      .where('dr.tenant_id', '=', tenantId)
-      .where('dr.id', 'in', ids)
-      .where('dr.status', '=', 'approved')
-      // Claimed by a delivery turf between preview and commit — no longer eligible.
-      .where('dr.turf_id', 'is', null)
-      .where('h.geocoding_status', '=', 'success')
-      .where('h.lat', 'is not', null)
-      .where('h.lng', 'is not', null)
-      .where(({ not, exists, selectFrom }) =>
-        not(
-          exists(
-            selectFrom('delivery_route_stops as s')
-              .select('s.id')
-              .whereRef('s.request_id', '=', 'dr.id')
-              .where('s.tenant_id', '=', tenantId)
-              .where('s.status', '=', 'pending'),
-          ),
-        ),
-      )
-      .select(['dr.id as request_id', 'h.lat as lat', 'h.lng as lng', COMPOSED_ADDRESS_SQL.as('address')])
-      .execute();
-    return rows.map((r) => ({
-      request_id: String(r.request_id),
-      lat: Number(r.lat),
-      lng: Number(r.lng),
-      address: r.address ?? '',
-    }));
   }
 
   /** Buckets of requests that are NOT eligible, so the plan page can narrate why (guide, don't error). */

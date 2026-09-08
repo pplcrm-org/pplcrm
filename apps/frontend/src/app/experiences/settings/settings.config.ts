@@ -50,7 +50,7 @@ export interface SettingsNavGroup {
 export const WORKSPACE_NAV_GROUPS: SettingsNavGroup[] = [
   { label: 'Workspace', ids: ['organization', 'modules', 'campaigns', 'boundaries', 'access', 'data'] },
   { label: 'Email', ids: ['communications', 'email-sync', 'domains'] },
-  { label: 'Features', ids: ['sla', 'donations', 'deliveries', 'app'] },
+  { label: 'Features', ids: ['sla', 'donations', 'app'] },
   { label: 'Plan & account', ids: ['storage', 'billing', 'api-keys', 'account'] },
 ];
 
@@ -397,12 +397,6 @@ export const CUSTOM_SECTIONS: CustomSectionConfig[] = [
     title: 'Donations',
     description:
       'Configure donation limit, residency restrictions, progressive tax credit tiers, and connect your Stripe account.',
-  },
-  {
-    id: 'deliveries',
-    icon: 'house-modern',
-    title: 'Deliveries',
-    description: 'Planning defaults the Plan routes page starts from — stop time, driving speed, drivers, return trip.',
   },
   {
     id: 'storage',

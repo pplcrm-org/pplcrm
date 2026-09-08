@@ -474,7 +474,7 @@
           </p>
         </div>
         } @else if (isTierLocked(custom.id)) {
-        <!-- Tier guard: mailbox sync and donations are Grassroots+, deliveries is Movement+ -->
+        <!-- Tier guard: mailbox sync and donations are Grassroots+ -->
         <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
           <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
           <p class="text-xs leading-relaxed text-base-content/80">
@@ -548,8 +548,6 @@
           <pc-domains-settings></pc-domains-settings>
           } @case ('donations') {
           <pc-donations-settings></pc-donations-settings>
-          } @case ('deliveries') {
-          <pc-deliveries-settings></pc-deliveries-settings>
           } @case ('storage') {
           <pc-storage-settings></pc-storage-settings>
           } @case ('billing') {
