@@ -41,6 +41,13 @@
     <ng-container i18n>On route:</ng-container> {{ r.route_name }}
   </a>
 </p>
+} @else if (r.turf_id && r.status !== 'delivered') {
+<!-- The stored pointer: a delivery outing (turf) is carrying this request right now. -->
+<p class="mt-1 text-[10px]">
+  <a class="link link-primary" [routerLink]="['/canvassing', r.turf_id]">
+    <ng-container i18n>Out with:</ng-container> {{ r.turf_name }}
+  </a>
+</p>
 } @else if (r.status === 'approved' && r.skip_reason) {
 <p class="mt-1 text-[10px] text-base-content/40">
   <ng-container i18n>Last attempt skipped:</ng-container> {{ r.skip_reason.toLowerCase() }}

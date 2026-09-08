@@ -32,6 +32,10 @@ export type DeliveryRequestGridRow = {
   geocoding_status: string | null;
   route_id: string | null;
   route_name: string | null;
+  /** The delivery turf carrying this request (stored pointer). On a delivered row it is
+   *  provenance — which outing delivered it — rather than live state. */
+  turf_id: string | null;
+  turf_name: string | null;
 };
 
 export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
@@ -65,6 +69,11 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
             .on('active_stop.status', '=', 'pending'),
         )
         .leftJoin('delivery_routes as rt', 'rt.id', 'active_stop.route_id')
+        // The delivery-turf pointer. Retired turfs are excluded the same way getSignStatus
+        // excludes them: a name from a dead outing would read as live work.
+        .leftJoin('turfs as tf', (join) =>
+          join.onRef('tf.id', '=', 'dr.turf_id').on('tf.tenant_id', '=', tenantId).on('tf.status', '!=', 'retired'),
+        )
         .where('dr.tenant_id', '=', tenantId)
         .$if(!!statusFilter && statusFilter !== 'open', (qb) =>
           qb.where('dr.status', '=', statusFilter as 'new' | 'approved' | 'declined' | 'delivered'),
@@ -96,6 +105,8 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
         'h.geocoding_status as geocoding_status',
         'active_stop.route_id as route_id',
         'rt.name as route_name',
+        'tf.id as turf_id',
+        'tf.name as turf_name',
         COMPOSED_ADDRESS_SQL.as('address'),
         sql<string>`NULLIF(TRIM(COALESCE(p.first_name, '') || ' ' || COALESCE(p.last_name, '')), '')`.as('person_name'),
       ])
@@ -118,6 +129,8 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
         geocoding_status: r.geocoding_status ?? null,
         route_id: r.route_id != null ? String(r.route_id) : null,
         route_name: r.route_name ?? null,
+        turf_id: r.turf_id != null ? String(r.turf_id) : null,
+        turf_name: r.turf_name != null ? String(r.turf_name) : null,
       })),
       count,
     };

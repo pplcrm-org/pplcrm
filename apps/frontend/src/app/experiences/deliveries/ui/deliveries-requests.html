@@ -68,7 +68,7 @@
       <th>Status</th>
       <th>Readiness</th>
       <th>Source</th>
-      <th>Route</th>
+      <th>Out with</th>
       <th>Requested</th>
     </ng-container>
 
@@ -136,6 +136,15 @@
         <a class="link link-hover text-primary" [routerLink]="['/deliveries/routes', row.route_id]">
           {{ row.route_name || 'Route' }}
         </a>
+        } @else if (row.turf_id && row.status !== 'delivered') {
+        <!-- The stored out-for-delivery pointer: a delivery outing (turf) is carrying this
+             request right now. -->
+        <a class="link link-hover text-primary" [routerLink]="['/canvassing', row.turf_id]">
+          {{ row.turf_name || 'Outing' }}
+        </a>
+        } @else if (row.turf_id) {
+        <!-- Delivered: the kept pointer is provenance (which outing delivered it), not live work. -->
+        <span class="text-base-content/50">{{ row.turf_name || 'Outing' }}</span>
         } @else {
         <span class="text-base-content/40">—</span>
         }
