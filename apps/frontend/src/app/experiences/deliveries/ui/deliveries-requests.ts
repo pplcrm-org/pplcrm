@@ -11,6 +11,7 @@ import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
 import { Table } from '@uxcommon/components/table/table';
 import { Icon } from '@icons/icon';
 
+import { AddFromListDialog } from './add-from-list-dialog';
 import { DeliveriesNav } from './deliveries-nav';
 import { requestSourceLabelSentence } from './request-source-label';
 
@@ -34,7 +35,18 @@ const STATUS_TONE: Record<string, PcStatusType> = {
 @Component({
   selector: 'pc-deliveries-requests',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [EmptyState, RouterLink, GeocodeChip, StatusBadge, Icon, DatePipe, TabBar, Table, DeliveriesNav],
+  imports: [
+    AddFromListDialog,
+    EmptyState,
+    RouterLink,
+    GeocodeChip,
+    StatusBadge,
+    Icon,
+    DatePipe,
+    TabBar,
+    Table,
+    DeliveriesNav,
+  ],
   templateUrl: './deliveries-requests.html',
 })
 export class DeliveriesRequests implements OnInit {
@@ -111,6 +123,13 @@ export class DeliveriesRequests implements OnInit {
 
   protected planRoutes(): void {
     void this.router.navigate(['/deliveries/plan']);
+  }
+
+  protected readonly addFromListOpen = signal(false);
+
+  protected onAddFromListDone(created: number): void {
+    this.addFromListOpen.set(false);
+    if (created > 0) void this.reload();
   }
 
   protected async approveSelected(): Promise<void> {

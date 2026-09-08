@@ -1,5 +1,6 @@
 import {
   AddDeliveryRequestObj,
+  AddDeliveryRequestsFromListObj,
   AssignVolunteerObj,
   CommitDeliveriesObj,
   GetSignStatusObj,
@@ -44,6 +45,9 @@ export const DeliveriesRouter = router({
   addRequest: authProcedure
     .input(AddDeliveryRequestObj)
     .mutation(({ ctx, input }) => controller.addRequest(ctx.auth, input)),
+  addRequestsFromList: authProcedure
+    .input(AddDeliveryRequestsFromListObj)
+    .mutation(({ ctx, input }) => controller.addRequestsFromList(ctx.auth, input)),
   updateRequestNotes: authProcedure
     .input(z.object({ id: idSchema, data: UpdateDeliveryRequestObj }))
     .mutation(({ ctx, input }) => controller.updateRequestNotes(ctx.auth, input.id, input.data)),

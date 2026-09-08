@@ -7,6 +7,9 @@
          page action the way the People grid's tabs share theirs with the grid toolbar. -->
     <pc-deliveries-nav class="flex-1" />
     <div class="flex items-center gap-2">
+      <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="addFromListOpen.set(true)">
+        Add from list
+      </button>
       <span
         class="tooltip-left"
         [class.tooltip]="readyCount() === 0"
@@ -155,4 +158,8 @@
     </tr>
     } }
   </pc-table>
+
+  @if (addFromListOpen()) {
+  <pc-add-from-list-dialog (done)="onAddFromListDone($event)" />
+  }
 </div>

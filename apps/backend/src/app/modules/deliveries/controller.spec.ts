@@ -933,3 +933,173 @@ describe('DeliveriesController — request purposes (one open request per househ
     expect(String(row.status)).toBe('delivered');
   });
 });
+
+describe('DeliveriesController — add requests from a list (bulk targeting intake)', () => {
+  const controller = new DeliveriesController();
+  const db = BaseRepository.dbInstance;
+  let s: Seed;
+  let staffAuth: IAuthKeyPayload;
+
+  beforeEach(async () => {
+    s = await seed(db);
+    staffAuth = { tenant_id: s.tenantId, user_id: s.organizerId, name: 'Sam Staff', session_id: 'sess', role: 'user' };
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await db.deleteFrom('map_lists_households').where('tenant_id', '=', s.tenantId).execute();
+    await db.deleteFrom('map_lists_persons').where('tenant_id', '=', s.tenantId).execute();
+    await db.deleteFrom('lists').where('tenant_id', '=', s.tenantId).execute();
+    await cleanup(db, s.tenantId);
+  });
+
+  async function household(): Promise<string> {
+    const id = rand();
+    await db
+      .insertInto('households')
+      .values({
+        id,
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        createdby_id: s.organizerId,
+        updatedby_id: s.organizerId,
+      })
+      .execute();
+    return id;
+  }
+
+  async function person(householdId: string, over: { dnc?: boolean; deceased?: boolean } = {}): Promise<string> {
+    const id = rand();
+    await db
+      .insertInto('persons')
+      .values({
+        id,
+        tenant_id: s.tenantId,
+        household_id: householdId,
+        first_name: `P${id}`,
+        do_not_contact: over.dnc ?? false,
+        deceased_at: over.deceased ? new Date() : null,
+        createdby_id: s.organizerId,
+        updatedby_id: s.organizerId,
+      })
+      .execute();
+    return id;
+  }
+
+  async function staticList(object: 'people' | 'households', memberIds: string[]): Promise<string> {
+    const id = rand();
+    await db
+      .insertInto('lists')
+      .values({
+        id,
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        name: `Targets ${id}`,
+        object,
+        is_dynamic: false,
+        createdby_id: s.organizerId,
+        updatedby_id: s.organizerId,
+      })
+      .execute();
+    const table = object === 'people' ? 'map_lists_persons' : 'map_lists_households';
+    for (const member of memberIds) {
+      await db
+        .insertInto(table)
+        .values({
+          tenant_id: s.tenantId,
+          list_id: id,
+          [object === 'people' ? 'person_id' : 'household_id']: member,
+          createdby_id: s.organizerId,
+          updatedby_id: s.organizerId,
+        })
+        .execute();
+    }
+    return id;
+  }
+
+  it('a people list: one approved request per household, lowest-id member as requester; DNC-only and already-open households skipped', async () => {
+    const a = await household();
+    const p1 = await person(a);
+    const p2 = await person(a);
+    const b = await household();
+    const p3 = await person(b, { dnc: true });
+    const c = await household();
+    const p4 = await person(c);
+    // c already holds an open flyer request — the same-purpose skip.
+    await controller.addRequest(staffAuth, { household_id: c, campaign_id: s.campaignId, purpose: 'flyer' });
+
+    const listId = await staticList('people', [p1, p2, p3, p4]);
+    const res = await controller.addRequestsFromList(staffAuth, {
+      list_id: listId,
+      purpose: 'flyer',
+      campaign_id: s.campaignId,
+    });
+
+    expect(res).toEqual({ created: 1, skipped_open: 1, skipped_barred: 1, capped: false });
+    const created = await db
+      .selectFrom('delivery_requests')
+      .select(['household_id', 'person_id', 'status', 'purpose', 'source'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('household_id', '=', a)
+      .executeTakeFirstOrThrow();
+    expect(String(created.status)).toBe('approved');
+    expect(String(created.purpose)).toBe('flyer');
+    expect(String(created.source)).toBe('manual');
+    const expectedRequester = String(Math.min(Number(p1), Number(p2)));
+    expect(String(created.person_id)).toBe(expectedRequester);
+    // Household b (its only member is DNC) got nothing.
+    const barred = await db
+      .selectFrom('delivery_requests')
+      .select('id')
+      .where('tenant_id', '=', s.tenantId)
+      .where('household_id', '=', b)
+      .executeTakeFirst();
+    expect(barred).toBeUndefined();
+  });
+
+  it('a household list: unanimous-DNC households are skipped, empty households pass with no requester', async () => {
+    const allDnc = await household();
+    await person(allDnc, { dnc: true });
+    const mixed = await household();
+    await person(mixed, { dnc: true });
+    await person(mixed);
+    const empty = await household();
+
+    const listId = await staticList('households', [allDnc, mixed, empty]);
+    const res = await controller.addRequestsFromList(staffAuth, {
+      list_id: listId,
+      purpose: 'yard_sign',
+      campaign_id: s.campaignId,
+    });
+
+    expect(res.created).toBe(2);
+    expect(res.skipped_barred).toBe(1);
+    const rows = await db
+      .selectFrom('delivery_requests')
+      .select(['household_id', 'person_id'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('household_id', 'in', [allDnc, mixed, empty])
+      .execute();
+    expect(rows.map((r) => String(r.household_id)).sort()).toEqual([empty, mixed].sort());
+    expect(rows.every((r) => r.person_id == null)).toBe(true);
+  });
+
+  it('a rerun creates nothing new — the batch is idempotent against its own output', async () => {
+    const a = await household();
+    await person(a);
+    const listId = await staticList('households', [a]);
+    const first = await controller.addRequestsFromList(staffAuth, {
+      list_id: listId,
+      purpose: 'flyer',
+      campaign_id: s.campaignId,
+    });
+    expect(first.created).toBe(1);
+    const second = await controller.addRequestsFromList(staffAuth, {
+      list_id: listId,
+      purpose: 'flyer',
+      campaign_id: s.campaignId,
+    });
+    expect(second.created).toBe(0);
+    expect(second.skipped_open).toBe(1);
+  });
+});

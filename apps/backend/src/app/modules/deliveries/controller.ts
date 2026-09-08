@@ -2,9 +2,10 @@ import { createHash, randomBytes } from 'crypto';
 
 import type { Kysely, Transaction } from 'kysely';
 
-import { DELIVERY_PURPOSE_NOUNS } from '../../../../../../libs/common/src';
+import { ADD_FROM_LIST_CAP, DELIVERY_PURPOSE_NOUNS } from '../../../../../../libs/common/src';
 import type {
   AddDeliveryRequestType,
+  AddDeliveryRequestsFromListType,
   AssignVolunteerType,
   CommitDeliveriesType,
   DeliveryPurpose,
@@ -24,6 +25,7 @@ import type {
 
 import { env } from '../../../env';
 import { assertVolunteerLinkResendAllowed } from '../../lib/volunteer-link-resend-limit';
+import { chunk } from '../../lib/chunk';
 import { BadRequestError, ConflictError, NotFoundError } from '../../errors/app-errors';
 import { geocodeAddress } from '../../lib/gis/geocode-address';
 import { notifyVolunteerOfLink, type VolunteerLinkSendResult } from '../../lib/mail/volunteer-link-notify';
@@ -46,6 +48,9 @@ import { CompanionAccessController } from '../companion-access/controller';
 // and the repos import nothing above the base layer, so this direction stays cycle-free.
 import { TurfAssignmentsRepo } from '../canvassing/repositories/turf-assignments.repo';
 import { TurfHouseholdsRepo } from '../canvassing/repositories/turf-households.repo';
+// Cycle-safe like the repos above: the lists controller reaches only campaigns, households
+// and persons — never this module or canvassing.
+import { ListsController } from '../lists/controller';
 import { WorkflowsController } from '../workflows/controller';
 import { DeliveryRequestsRepo } from './repositories/delivery-requests.repo';
 import { DeliveryRouteStopsRepo } from './repositories/delivery-route-stops.repo';
@@ -142,6 +147,7 @@ function isOpenHouseholdConflict(err: unknown): boolean {
 }
 
 export class DeliveriesController {
+  private readonly lists = new ListsController();
   private readonly requestsRepo = new DeliveryRequestsRepo();
   private readonly turfAssignments = new TurfAssignmentsRepo();
   private readonly turfHouseholds = new TurfHouseholdsRepo();
@@ -384,6 +390,176 @@ export class DeliveriesController {
     }
     await this.logRequestStanding(undefined, auth, [String(created.id)], 'recorded');
     return { id: String(created.id) };
+  }
+
+  /**
+   * Bulk targeting intake (§ turfs-absorb-deliveries Phase 2): one APPROVED request per
+   * eligible household in a list — the staff-driven path for "flyer this neighbourhood",
+   * feeding the delivery-turf pool directly (approved, so cuttable without a second pass).
+   *
+   * Eligibility, in order:
+   *  - a people list contributes each member's household; DNC and deceased members never
+   *    become requesters, and a household whose every listed member is barred contributes
+   *    nothing. The requester is the lowest-id eligible member (deterministic re-runs).
+   *  - a household list contributes its households with no requester; a household whose
+   *    every living resident is DNC is skipped (they asked not to hear from us — a
+   *    doorstep drop is a message like any other). Empty households pass.
+   *  - the tenant's placeholder household never gets a request (no real door).
+   *  - households already holding an OPEN request of this purpose are skipped, and the
+   *    per-purpose partial index catches any race the pre-check misses (DO NOTHING).
+   *  - the batch stops at ADD_FROM_LIST_CAP, reported back as `capped`.
+   *
+   * Activity: ONE workspace log entry with the counts — deliberately not the per-household
+   * standing log, which writes rows one at a time and would turn a 5,000-door intake into
+   * 10,000 awaited inserts. The requests themselves carry source 'manual' + created_by.
+   */
+  public async addRequestsFromList(
+    auth: IAuthKeyPayload,
+    input: AddDeliveryRequestsFromListType,
+  ): Promise<{ created: number; skipped_open: number; skipped_barred: number; capped: boolean }> {
+    const campaignId = await this.campaignsRepo.resolveForWrite({
+      tenant_id: auth.tenant_id,
+      campaign_id: input.campaign_id,
+    });
+    const members = await this.lists.getCurrentMembers(auth, String(input.list_id));
+
+    const placeholderRow = await this.requestsRepo.db
+      .selectFrom('tenants')
+      .select('placeholder_household_id')
+      .where('id', '=', auth.tenant_id)
+      .executeTakeFirst();
+    const placeholderId =
+      placeholderRow?.placeholder_household_id != null ? String(placeholderRow.placeholder_household_id) : null;
+
+    // household id → requester person id (or null). skippedBarred counts households the
+    // DNC/deceased rules removed entirely.
+    const requesterByHousehold = new Map<string, string | null>();
+    let skippedBarred = 0;
+
+    if (members.object === 'people') {
+      const eligibleByHousehold = new Map<string, string>();
+      const barredHouseholds = new Set<string>();
+      for (const ids of chunk(members.ids)) {
+        const rows = await this.requestsRepo.db
+          .selectFrom('persons')
+          .select(['id', 'household_id', 'do_not_contact', 'deceased_at'])
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('id', 'in', ids)
+          .execute();
+        for (const r of rows) {
+          if (r.household_id == null) continue;
+          const hid = String(r.household_id);
+          if (placeholderId != null && hid === placeholderId) continue;
+          if (r.do_not_contact || r.deceased_at != null) {
+            barredHouseholds.add(hid);
+            continue;
+          }
+          const pid = String(r.id);
+          const prior = eligibleByHousehold.get(hid);
+          if (prior == null || Number(pid) < Number(prior)) eligibleByHousehold.set(hid, pid);
+        }
+      }
+      for (const [hid, pid] of eligibleByHousehold) requesterByHousehold.set(hid, pid);
+      for (const hid of barredHouseholds) if (!eligibleByHousehold.has(hid)) skippedBarred++;
+    } else {
+      const candidates = members.ids.map(String).filter((hid) => placeholderId == null || hid !== placeholderId);
+      // A household where somebody living is NOT DNC stays; only unanimous DNC skips it.
+      // Empty households (nobody living on file) pass — there is still a door.
+      const hasLiving = new Set<string>();
+      const hasContactable = new Set<string>();
+      for (const ids of chunk(candidates)) {
+        const rows = await this.requestsRepo.db
+          .selectFrom('persons')
+          .select(['household_id', 'do_not_contact', 'deceased_at'])
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('household_id', 'in', ids)
+          .execute();
+        for (const r of rows) {
+          if (r.household_id == null || r.deceased_at != null) continue;
+          const hid = String(r.household_id);
+          hasLiving.add(hid);
+          if (!r.do_not_contact) hasContactable.add(hid);
+        }
+      }
+      for (const hid of candidates) {
+        if (hasLiving.has(hid) && !hasContactable.has(hid)) {
+          skippedBarred++;
+          continue;
+        }
+        requesterByHousehold.set(hid, null);
+      }
+    }
+
+    // Skip households already holding an open request of this kind (tenant-wide, like the
+    // index). The pre-check keeps the counts honest; the DO NOTHING below wins any race.
+    let skippedOpen = 0;
+    const householdIds = [...requesterByHousehold.keys()];
+    for (const ids of chunk(householdIds)) {
+      const rows = await this.requestsRepo.db
+        .selectFrom('delivery_requests')
+        .select('household_id')
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('household_id', 'in', ids)
+        .where('purpose', '=', input.purpose)
+        .where('status', 'in', ['new', 'approved'])
+        .execute();
+      for (const r of rows) {
+        if (requesterByHousehold.delete(String(r.household_id))) skippedOpen++;
+      }
+    }
+
+    // Deterministic order, then the cap.
+    const eligible = [...requesterByHousehold.keys()].sort((a, b) => Number(a) - Number(b));
+    const capped = eligible.length > ADD_FROM_LIST_CAP;
+    const batch = capped ? eligible.slice(0, ADD_FROM_LIST_CAP) : eligible;
+
+    let created = 0;
+    for (const ids of chunk(batch, 1000)) {
+      const values = ids.map(
+        (hid) =>
+          ({
+            tenant_id: auth.tenant_id,
+            campaign_id: campaignId,
+            household_id: hid,
+            person_id: requesterByHousehold.get(hid) ?? null,
+            web_form_id: null,
+            source: 'manual',
+            status: 'approved',
+            purpose: input.purpose,
+            notes: null,
+            createdby_id: auth.user_id,
+            updatedby_id: auth.user_id,
+          }) as OperationDataType<'delivery_requests', 'insert'>,
+      );
+      const inserted = await this.requestsRepo.db
+        .insertInto('delivery_requests')
+        .values(values)
+        .onConflict((oc) => oc.doNothing())
+        .returning('id')
+        .execute();
+      created += inserted.length;
+      skippedOpen += ids.length - inserted.length;
+    }
+
+    await this.userActivity.log({
+      tenant_id: auth.tenant_id,
+      user_id: auth.user_id,
+      activity: 'create',
+      entity: 'delivery_request',
+      entity_id: String(input.list_id),
+      quantity: created,
+      metadata: {
+        action: 'add_requests_from_list',
+        list_id: String(input.list_id),
+        purpose: input.purpose,
+        created,
+        skipped_open: skippedOpen,
+        skipped_barred: skippedBarred,
+        capped,
+      },
+    });
+
+    return { created, skipped_open: skippedOpen, skipped_barred: skippedBarred, capped };
   }
 
   public async updateRequestNotes(auth: IAuthKeyPayload, id: string, input: UpdateDeliveryRequestType) {

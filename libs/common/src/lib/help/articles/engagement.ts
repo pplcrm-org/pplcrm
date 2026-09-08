@@ -718,6 +718,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         text: 'Requests arrive three ways: staff record one on a household or person page, canvassers record one at the door in the [Canvass Companion](/help/canvassing), and supporters can ask for one themselves on any [web form](/help/forms) that has the **“I’d like a yard sign”** checkbox turned on — a checked box lands here as a new request for the submitter’s address, waiting for your approval like any other.',
       },
       {
+        kind: 'p',
+        text: '**Add from list** (top of the requests grid) is the bulk targeting path — “flyer this neighbourhood” as one action. Pick any [list](/lists) and a kind (yard signs or flyers), and one **approved** request is created per household in it, ready to cut into [delivery outings](/help/canvassing). It skips households that asked not to be contacted, households already owed one of the same kind, and stops at 5,000 households per run — the result message reports each number, and running it again picks up where the cap stopped.',
+      },
+      {
         kind: 'callout',
         tone: 'tip',
         title: 'Address problem?',

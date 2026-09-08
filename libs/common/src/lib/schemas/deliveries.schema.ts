@@ -74,6 +74,22 @@ export const AddDeliveryRequestObj = z.object({
   notes: notesSchema,
 });
 
+/**
+ * Bulk targeting intake: one approved request per eligible household in a list. DNC
+ * residents are never made requesters (a household whose every living resident is DNC is
+ * skipped), households already holding an open request of this kind are skipped, and the
+ * batch stops at the cap so a workspace-sized list cannot be turned into requests blind.
+ */
+export const AddDeliveryRequestsFromListObj = z.object({
+  /** Campaigns §15 — the context these requests belong to; backend defaults to the office. */
+  campaign_id: idSchema.optional(),
+  list_id: idSchema,
+  purpose: z.enum(DELIVERY_PURPOSES),
+});
+
+/** The most households one add-from-list call will create requests for. */
+export const ADD_FROM_LIST_CAP = 5000;
+
 export const UpdateDeliveryRequestObj = z.object({
   notes: notesSchema,
 });
@@ -176,6 +192,7 @@ export const PublicStopActionObj = z.object({
 });
 
 export type AddDeliveryRequestType = z.infer<typeof AddDeliveryRequestObj>;
+export type AddDeliveryRequestsFromListType = z.infer<typeof AddDeliveryRequestsFromListObj>;
 export type UpdateDeliveryRequestType = z.infer<typeof UpdateDeliveryRequestObj>;
 export type SetDeliveryRequestStatusType = z.infer<typeof SetDeliveryRequestStatusObj>;
 export type GetSignStatusType = z.infer<typeof GetSignStatusObj>;

@@ -309,6 +309,8 @@ export {
   isLocationPrecision,
   UpdateCompanionSettingsObj,
   AddDeliveryRequestObj,
+  AddDeliveryRequestsFromListObj,
+  ADD_FROM_LIST_CAP,
   UpdateDeliveryRequestObj,
   SetDeliveryRequestStatusObj,
   PlanDeliveriesObj,
@@ -687,6 +689,7 @@ export type {
 } from './lib/schemas/canvassing.schema';
 export type {
   AddDeliveryRequestType,
+  AddDeliveryRequestsFromListType,
   UpdateDeliveryRequestType,
   SetDeliveryRequestStatusType,
   PlanDeliveriesType,

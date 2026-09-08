@@ -2,6 +2,7 @@ import { Service } from '@angular/core';
 
 import type {
   AddDeliveryRequestType,
+  AddDeliveryRequestsFromListType,
   CommitDeliveriesType,
   DeliveryRequestStatus,
   ExportCsvInputType,
@@ -40,6 +41,13 @@ export class DeliveriesRequestsService extends AbstractAPIService<'delivery_requ
 
   public add(row: AddDeliveryRequestType): Promise<{ id: string }> {
     return this.api.deliveries.addRequest.mutate(row);
+  }
+
+  /** Bulk targeting intake: one approved request per eligible household in a list. */
+  public addFromList(
+    input: AddDeliveryRequestsFromListType,
+  ): Promise<RouterOutputs['deliveries']['addRequestsFromList']> {
+    return this.api.deliveries.addRequestsFromList.mutate(input);
   }
 
   public update(id: string, data: UpdateDeliveryRequestType): Promise<{ id: string }> {
