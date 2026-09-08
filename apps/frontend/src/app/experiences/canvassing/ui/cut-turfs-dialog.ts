@@ -7,12 +7,19 @@ import { Icon } from '@icons/icon';
 import type { PcIconNameType } from '@icons/icons.index';
 import { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
 
-import type { CanvassUniversePreset, TurfMode, TurfTravel } from '../../../../../../../libs/common/src';
+import type {
+  CanvassUniversePreset,
+  TurfDeliveryPurpose,
+  TurfMode,
+  TurfTravel,
+} from '../../../../../../../libs/common/src';
 import {
   CANVASS_UNIVERSE_DESCRIPTIONS,
   CANVASS_UNIVERSE_LABELS,
   DEFAULT_NOT_RECENT_DAYS,
   DOORS_PER_TURF_PRESETS,
+  TURF_DELIVERY_PURPOSES,
+  TURF_DELIVERY_PURPOSE_LABELS,
   TURF_TRAVEL_LABELS,
   TURF_TRAVEL_MODES,
 } from '../../../../../../../libs/common/src';
@@ -29,11 +36,7 @@ interface UniverseOption {
 /** The universe pickers the wizard offers: the named presets, plus "an existing list". */
 type UniverseChoice = CanvassUniversePreset | 'list';
 
-/**
- * The mode cards. Delivery is deliberately absent until the delivery-mode door
- * flow exists (Phase 2 of the turfs-absorb-deliveries plan) — a card that cuts
- * turfs no companion screen can walk yet would be a lie.
- */
+/** The mode cards — the three jobs a turf can send volunteers out to do. */
 const MODE_CARDS: { mode: TurfMode; label: string; description: string; icon: PcIconNameType }[] = [
   {
     mode: 'canvass',
@@ -47,7 +50,20 @@ const MODE_CARDS: { mode: TurfMode; label: string; description: string; icon: Pc
     description: 'Remind identified supporters to vote. Quick taps, not a survey.',
     icon: 'megaphone',
   },
+  {
+    mode: 'delivery',
+    label: 'Sign & flyer delivery',
+    description: 'Deliver approved yard-sign and flyer requests. Doors come from the request pool.',
+    icon: 'map-pin',
+  },
 ];
+
+/** What a delivery outing carries — decides which pool requests its doors come from. */
+const PURPOSE_DESCRIPTIONS: Record<TurfDeliveryPurpose, string> = {
+  yard_sign: 'Only doors with an approved yard-sign request.',
+  flyer: 'Only doors with an approved flyer request.',
+  both: 'Every door with any approved request — one trip serves both kinds.',
+};
 
 // Assumed door-knocking pace for the time estimate helper.
 const DOORS_PER_HOUR = 25;
@@ -83,6 +99,12 @@ export class CutTurfsDialog implements OnInit {
   ];
   protected readonly presetLabels = CANVASS_UNIVERSE_LABELS;
   protected readonly presetDescriptions = CANVASS_UNIVERSE_DESCRIPTIONS;
+
+  /** Step 2 on a delivery cut — what the volunteers are carrying, not whose doors. */
+  protected readonly purposeChoices = TURF_DELIVERY_PURPOSES;
+  protected readonly purposeLabels = TURF_DELIVERY_PURPOSE_LABELS;
+  protected readonly purposeDescriptions = PURPOSE_DESCRIPTIONS;
+  protected readonly deliveryPurpose = signal<TurfDeliveryPurpose>('both');
   protected readonly universeChoice = signal<UniverseChoice | null>(null);
   protected readonly notRecentDays = signal<number>(DEFAULT_NOT_RECENT_DAYS);
   protected readonly universes = signal<UniverseOption[]>([]);
@@ -136,6 +158,9 @@ export class CutTurfsDialog implements OnInit {
 
   /** The sentence naming what step 2 chose, shown at the top of step 3. */
   protected readonly universeSummary = computed<string>(() => {
+    if (this.mode() === 'delivery') {
+      return `${this.purposeLabels[this.deliveryPurpose()]} — doors from the approved request pool`;
+    }
     const choice = this.universeChoice();
     if (choice === 'everyone') return 'Everyone — every located household in the workspace';
     const name = this.resolvedListName();
@@ -182,7 +207,13 @@ export class CutTurfsDialog implements OnInit {
     // GOTV is by definition a supporters walk — pre-select the matching universe,
     // still changeable on the next step.
     if (mode === 'gotv' && this.universeChoice() == null) this.universeChoice.set('supporters');
+    // Deliveries are usually driven; still changeable on the last step.
+    if (mode === 'delivery') this.travel.set('drive');
     this.step.set(2);
+  }
+
+  protected choosePurpose(purpose: TurfDeliveryPurpose): void {
+    this.deliveryPurpose.set(purpose);
   }
 
   protected choosePreset(preset: CanvassUniversePreset): void {
@@ -205,6 +236,14 @@ export class CutTurfsDialog implements OnInit {
 
   /** Step 2 → 3: turn the chosen universe into a list id (or null for Everyone). */
   protected async continueToSize(): Promise<void> {
+    if (this.mode() === 'delivery') {
+      // The pool is the universe of a delivery cut — no list to resolve.
+      this.resolvedListId.set(null);
+      this.resolvedListName.set(null);
+      this.step.set(3);
+      await this.refreshPreview();
+      return;
+    }
     const choice = this.universeChoice();
     if (choice == null) return;
     if (choice === 'list' && !this.selectedListId()) return;
@@ -257,7 +296,12 @@ export class CutTurfsDialog implements OnInit {
     const end = this._loading.begin();
     try {
       this.preview.set(
-        await this.svc.previewCut({ list_id: this.resolvedListId(), doors_per_turf: this.doorsPerTurf() }),
+        await this.svc.previewCut({
+          list_id: this.resolvedListId(),
+          doors_per_turf: this.doorsPerTurf(),
+          mode: this.mode(),
+          ...(this.mode() === 'delivery' ? { delivery_purpose: this.deliveryPurpose() } : {}),
+        }),
       );
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to preview cut.');
@@ -275,6 +319,7 @@ export class CutTurfsDialog implements OnInit {
         doors_per_turf: this.doorsPerTurf(),
         mode: this.mode(),
         travel: this.travel(),
+        ...(this.mode() === 'delivery' ? { delivery_purpose: this.deliveryPurpose() } : {}),
       });
       this.done.emit(res.created);
     } catch (err) {

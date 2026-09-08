@@ -30,8 +30,38 @@
   </div>
   }
 
+  <!-- Step 2 (delivery) — what the volunteers carry. The doors are the approved request
+       pool, so there is no universe to pick; the purpose decides which requests count. -->
+  @if (step() === 2 && mode() === 'delivery') {
+  <p class="-mt-3 text-sm text-base-content/60">
+    What are the volunteers carrying? The doors come from the approved request pool — every household with a matching
+    approved request that no outing is already serving.
+  </p>
+
+  <div class="mt-4 grid gap-2">
+    @for (p of purposeChoices; track p) {
+    <button
+      type="button"
+      class="rounded-lg border p-3 text-left transition-colors"
+      [class.border-primary]="deliveryPurpose() === p"
+      [class.bg-primary/5]="deliveryPurpose() === p"
+      [class.border-base-300]="deliveryPurpose() !== p"
+      (click)="choosePurpose(p)"
+    >
+      <span class="block font-medium">{{ purposeLabels[p] }}</span>
+      <span class="block text-sm text-base-content/60">{{ purposeDescriptions[p] }}</span>
+    </button>
+    }
+  </div>
+
+  <div pc-modal-footer class="flex gap-2">
+    <button type="button" class="btn btn-outline btn-accent" (click)="back()">Back</button>
+    <button type="button" class="btn btn-primary" (click)="continueToSize()">Continue</button>
+  </div>
+  }
+
   <!-- Step 2 — whose doors. Named presets first, an existing list as the escape hatch. -->
-  @if (step() === 2) {
+  @if (step() === 2 && mode() !== 'delivery') {
   <p class="-mt-3 text-sm text-base-content/60">
     Whose doors do we knock? Each choice is a smart list the turfs stay in step with — "Refresh doors from list" pulls
     new matches in later without touching any knock already logged.
@@ -194,7 +224,12 @@
       {{ p.unplaced }} household{{ p.unplaced === 1 ? ' has' : 's have' }} no map position yet, so they cannot be put in
       a turf. They join one automatically once their address is located.
     </p>
-    } } @else {
+    } } @else if (mode() === 'delivery') {
+    <p class="text-base-content/60">
+      No approved requests with a located address are waiting, so there is nothing to cut. Approve some requests first —
+      doors already out with another outing don't count.
+    </p>
+    } @else {
     <p class="text-base-content/60">
       Nobody in this universe has an address we could place on the map yet, so there is nothing to cut. Addresses are
       located automatically shortly after they are added.

@@ -454,7 +454,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
           {
             title: 'Pick what the outing is for',
             detail:
-              '**Every door** is the classic persuasion canvass: survey, issues, follow-ups. **GOTV** sends volunteers to remind identified supporters to vote — quick taps instead of a survey.',
+              '**Every door** is the classic persuasion canvass: survey, issues, follow-ups. **GOTV** sends volunteers to remind identified supporters to vote — quick taps instead of a survey. **Sign & flyer delivery** cuts an outing from the approved request pool instead of a list: pick whether it carries yard signs, flyers, or both, and every waiting request of that kind with a located address becomes a door.',
           },
           {
             title: 'Pick whose doors',
@@ -484,7 +484,12 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'Persuasion turfs get row-level quick taps too — **Supporter**, **Non-supporter**, **Not home** — so the common outcomes are recorded without opening the door screen. The buttons disappear once a door is attempted. Every row shows who lives there, the address, and who last visited ("Julie L. spoke to someone here 1 day ago"), so nobody re-knocks a door a teammate finished an hour ago.',
+        text: 'Persuasion turfs get row-level quick taps too — **Supporter**, **Undecided**, **Non-supporter**, **Not home** — so the common outcomes are recorded without opening the door screen. On a door with several residents the tap records the household’s stance and the confirmation says so; open the door to record each person. The buttons disappear once a door is attempted. Every row shows who lives there, the address, and who last visited ("Julie L. spoke to someone here 1 day ago"), so nobody re-knocks a door a teammate finished an hour ago.',
+      },
+      { kind: 'h2', id: 'delivery-outings', text: 'Delivery outings: signs and flyers as turfs' },
+      {
+        kind: 'p',
+        text: 'A turf cut in **delivery** mode takes its doors from the approved [delivery requests](/deliveries) pool rather than a list. Cutting one claims those requests — they leave the pool and the planning screens, so two outings can never be sent to the same lawn — and each request shows which outing is carrying it. Declining a request mid-outing takes its door off the volunteer’s list and frees nothing else; retiring the outing returns its undelivered requests to the pool. **Refresh doors from the request pool** (in the turf’s row menu) pulls in requests approved after the cut and drops doors whose requests were pulled back; doors already delivered stay put. Delivery outings default to **by car**, so the doors come in a driving order.',
       },
       { kind: 'h2', id: 'statuses', text: 'What the badge on a turf means' },
       {

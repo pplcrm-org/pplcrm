@@ -73,7 +73,7 @@ describe('CutTurfsDialog', () => {
 
       expect(mockCanvassing.ensureUniverseList).toHaveBeenCalledWith({ preset: 'supporters', days: undefined });
       expect(component['step']()).toBe(3);
-      expect(mockCanvassing.previewCut).toHaveBeenCalledWith({ list_id: '9', doors_per_turf: 40 });
+      expect(mockCanvassing.previewCut).toHaveBeenCalledWith({ list_id: '9', doors_per_turf: 40, mode: 'gotv' });
     });
 
     it('the not-recent preset carries its day window', async () => {
@@ -100,7 +100,35 @@ describe('CutTurfsDialog', () => {
       await component['continueToSize']();
 
       expect(mockCanvassing.ensureUniverseList).not.toHaveBeenCalled();
-      expect(mockCanvassing.previewCut).toHaveBeenCalledWith({ list_id: null, doors_per_turf: 40 });
+      expect(mockCanvassing.previewCut).toHaveBeenCalledWith({ list_id: null, doors_per_turf: 40, mode: 'canvass' });
+    });
+
+    it('a delivery cut skips list resolution: the pool is the universe, the purpose rides along', async () => {
+      mockCanvassing.previewCut.mockResolvedValue(enginePreview);
+      mockCanvassing.cutTurfs.mockResolvedValue({ created: 1, unplaced: 0 });
+      component['chooseMode']('delivery');
+      expect(component['travel']()).toBe('drive');
+      component['choosePurpose']('yard_sign');
+
+      await component['continueToSize']();
+
+      expect(mockCanvassing.ensureUniverseList).not.toHaveBeenCalled();
+      expect(component['step']()).toBe(3);
+      expect(mockCanvassing.previewCut).toHaveBeenCalledWith({
+        list_id: null,
+        doors_per_turf: 40,
+        mode: 'delivery',
+        delivery_purpose: 'yard_sign',
+      });
+
+      await component['cut']();
+      expect(mockCanvassing.cutTurfs).toHaveBeenCalledWith({
+        list_id: null,
+        doors_per_turf: 40,
+        mode: 'delivery',
+        travel: 'drive',
+        delivery_purpose: 'yard_sign',
+      });
     });
 
     it('cutting sends the chosen mode and travel with the resolved universe', async () => {
