@@ -168,12 +168,10 @@ describe('Sidebar Component', () => {
       return items.flatMap((i) => (i.children ? [i, ...i.children] : [i])).find((i) => i.name === name);
     }
 
-    it('dims canvassing and deliveries in church mode (off by mode default, still visible)', () => {
+    it('dims canvassing in church mode (off by mode default, still visible)', () => {
       const cmp = buildWith('church');
       expect(find(cmp, 'Canvassing')?.dimmed).toBe(true);
       expect(find(cmp, 'Canvassing')?.hidden).toBeFalsy();
-      expect(find(cmp, 'Deliveries')?.dimmed).toBe(true);
-      expect(find(cmp, 'Deliveries')?.hidden).toBeFalsy();
     });
 
     it('dims donations in office mode', () => {
@@ -197,8 +195,6 @@ describe('Sidebar Component', () => {
       const cmp = buildWith('campaign');
       expect(find(cmp, 'Canvassing')?.hidden).toBeFalsy();
       expect(find(cmp, 'Canvassing')?.dimmed).toBeFalsy();
-      expect(find(cmp, 'Deliveries')?.hidden).toBeFalsy();
-      expect(find(cmp, 'Deliveries')?.dimmed).toBeFalsy();
     });
 
     it('lets an explicit override re-show a module the mode turned off', () => {

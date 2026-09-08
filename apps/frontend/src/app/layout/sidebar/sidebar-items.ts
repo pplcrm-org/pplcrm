@@ -208,7 +208,10 @@ export const SidebarItems: ISidebarItem[] = [
     name: `VOLUNTEERS`,
     type: 'subheading',
     children: [
-      // Wave 2 field surfaces: Canvassing (§13) and Deliveries (§14).
+      // One field surface: Canvassing (§13) absorbed Deliveries (§14) — delivery work is
+      // a Requests tab plus delivery-mode turfs on /canvassing, so nobody has to figure
+      // out which of two entries their yard signs live under. The old `e` shortcut and
+      // the `/deliveries` route both land there via redirects.
       {
         name: 'Canvassing',
         termKey: 'nav.canvassing',
@@ -216,18 +219,9 @@ export const SidebarItems: ISidebarItem[] = [
         route: '/canvassing',
         icon: 'route',
         shortcut: 'v',
-      },
-      {
-        name: 'Deliveries',
-        termKey: 'nav.deliveries',
-        moduleId: 'deliveries',
-        route: '/deliveries',
-        icon: 'house-modern',
-        // `e` (dEliveries): `d` belongs to Donations, and the church-mode wording
-        // ("Drop-offs") also starts with a taken letter.
-        shortcut: 'e',
-        // badgeCount = live approved-and-ready request count (spec §14), populated at runtime by
-        // Sidebar from `deliveries.getReadyCount` — see sidebar.ts. Static data left unset.
+        // badgeCount = approved-and-ready delivery request count, populated at runtime by
+        // Sidebar from `deliveries.getReadyCount` when the deliveries module is on —
+        // see sidebar.ts. Static data left unset.
       },
       {
         name: 'Teams',

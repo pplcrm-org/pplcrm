@@ -6,6 +6,7 @@ import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.servic
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OrgModeService } from '../../../services/org-mode.service';
+import { DeliveriesRequestsService } from '../../deliveries/services/deliveries-requests-service';
 import { CanvassingService, type Coverage, type FieldReport } from '../services/canvassing-service';
 import { CanvassingPage } from './canvassing-page';
 
@@ -139,7 +140,8 @@ describe('CanvassingPage', () => {
         { provide: CanvassingService, useValue: svc },
         { provide: AlertService, useValue: alerts },
         { provide: ConfirmDialogService, useValue: { confirm: vi.fn(), prompt: vi.fn() } },
-        { provide: OrgModeService, useValue: { term: () => 'Door knocking' } },
+        { provide: OrgModeService, useValue: { term: () => 'Door knocking', isEnabled: () => false } },
+        { provide: DeliveriesRequestsService, useValue: { getReadyCount: vi.fn().mockResolvedValue(0) } },
       ],
     });
   });

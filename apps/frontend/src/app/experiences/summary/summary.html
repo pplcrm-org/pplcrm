@@ -207,18 +207,21 @@
         </span>
       </a>
       } @if (showDeliveriesRow()) {
+      <!-- Delivery requests live on the Canvassing page's Requests tab now. -->
       <a
-        routerLink="/deliveries"
+        routerLink="/canvassing"
+        [queryParams]="{ tab: 'requests' }"
         class="flex items-center gap-3 rounded-md border border-line bg-base-50/50 px-3 py-2.5 hover:border-primary/40"
       >
         <pc-icon name="yard-sign" [size]="4" class="shrink-0 text-primary"></pc-icon>
         <span class="min-w-0">
           <span class="block text-[17px] font-bold leading-tight tabular-nums">{{ signsReady() ?? '—' }}</span>
-          <span class="block truncate text-[11px] text-base-content/45">Sign requests ready to route</span>
+          <span class="block truncate text-[11px] text-base-content/45">Sign requests ready to go out</span>
         </span>
       </a>
       <a
-        routerLink="/deliveries/routes"
+        routerLink="/canvassing"
+        [queryParams]="{ tab: 'requests' }"
         class="flex items-center gap-3 rounded-md border border-line bg-base-50/50 px-3 py-2.5 hover:border-primary/40"
       >
         <pc-icon name="check-circle" [size]="4" class="shrink-0 text-primary"></pc-icon>

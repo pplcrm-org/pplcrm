@@ -1,4 +1,4 @@
-import { Component, type OnInit, computed, inject, output, signal } from '@angular/core';
+import { Component, type OnInit, computed, inject, input, output, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 
 import { createLoadingGate } from '@uxcommon/loading-gate';
@@ -81,6 +81,13 @@ export class CutTurfsDialog implements OnInit {
 
   public readonly done = output<number>();
 
+  /**
+   * Pre-chosen mode card: the wizard opens on step 2 with this mode already picked.
+   * The Requests tab's "Cut into outings" passes 'delivery' — the user already said
+   * what kind of outing they want, so the wizard starts on the next question.
+   */
+  public readonly initialMode = input<TurfMode | null>(null);
+
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
   protected readonly saving = signal(false);
@@ -140,6 +147,8 @@ export class CutTurfsDialog implements OnInit {
   ngOnInit(): void {
     void this.loadUniverses();
     void this.loadBoundaryState();
+    const preset = this.initialMode();
+    if (preset != null) this.chooseMode(preset);
   }
 
   private async loadBoundaryState(): Promise<void> {

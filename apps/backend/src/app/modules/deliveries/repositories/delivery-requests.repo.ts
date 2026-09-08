@@ -23,6 +23,8 @@ export type DeliveryRequestGridRow = {
   id: string;
   status: string;
   source: string;
+  /** What the household is owed — 'yard_sign' or 'flyer' (the grid's Kind column). */
+  purpose: string;
   notes: string | null;
   created_at: Date | string | null;
   person_id: string | null;
@@ -98,6 +100,7 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
         'dr.id as id',
         'dr.status as status',
         'dr.source as source',
+        'dr.purpose as purpose',
         'dr.notes as notes',
         'dr.created_at as created_at',
         'dr.person_id as person_id',
@@ -120,6 +123,7 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
         id: String(r.id),
         status: String(r.status),
         source: String(r.source),
+        purpose: String(r.purpose ?? 'yard_sign'),
         notes: r.notes ?? null,
         created_at: r.created_at ?? null,
         person_id: r.person_id != null ? String(r.person_id) : null,

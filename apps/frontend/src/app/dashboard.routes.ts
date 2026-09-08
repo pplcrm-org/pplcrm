@@ -1,4 +1,5 @@
-import type { Routes } from '@angular/router';
+import { inject } from '@angular/core';
+import { Router, type Routes } from '@angular/router';
 import { roleGuard } from './auth/role-guard';
 import {
   companyRecordIdResolver,
@@ -375,32 +376,20 @@ export const dashboardRoutes: Routes = [
       },
     ],
   },
+  // The old Deliveries module was absorbed into Canvassing (turfs-absorb-deliveries
+  // Phase 4): the request pool is now the Requests tab there, and delivery work goes
+  // out as delivery-mode turfs. Bookmarks, pins and old help links land on that tab.
   {
     path: 'deliveries',
-    data: { breadcrumb: { term: 'nav.deliveries' } },
     children: [
       {
         path: '',
-        loadComponent: () =>
-          import('./experiences/deliveries/ui/deliveries-requests').then((m) => m.DeliveriesRequests),
-        data: { shouldReuse: true, key: 'deliveriesrequestsroot' },
+        pathMatch: 'full',
+        redirectTo: () => inject(Router).createUrlTree(['/canvassing'], { queryParams: { tab: 'requests' } }),
       },
       {
-        path: 'plan',
-        loadComponent: () => import('./experiences/deliveries/ui/deliveries-plan').then((m) => m.DeliveriesPlan),
-        data: { breadcrumb: 'Plan routes' },
-      },
-      {
-        path: 'routes',
-        loadComponent: () => import('./experiences/deliveries/ui/deliveries-routes').then((m) => m.DeliveriesRoutes),
-        data: { breadcrumb: 'Routes' },
-      },
-      {
-        path: 'routes/:id',
-        loadComponent: () =>
-          import('./experiences/deliveries/ui/deliveries-route-detail').then((m) => m.DeliveriesRouteDetail),
-        // Default until the page loads and publishes the route's name itself.
-        data: { breadcrumb: [{ label: 'Routes', route: '/deliveries/routes' }] },
+        path: '**',
+        redirectTo: () => inject(Router).createUrlTree(['/canvassing'], { queryParams: { tab: 'requests' } }),
       },
     ],
   },

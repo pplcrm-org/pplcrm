@@ -1,6 +1,6 @@
 import { DatePipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
-import { Router, RouterLink } from '@angular/router';
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject, output, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
 
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -12,9 +12,9 @@ import { Table } from '@uxcommon/components/table/table';
 import { Icon } from '@icons/icon';
 
 import { AddFromListDialog } from './add-from-list-dialog';
-import { DeliveriesNav } from './deliveries-nav';
 import { requestSourceLabelSentence } from './request-source-label';
 
+import { DELIVERY_PURPOSE_LABELS } from '../../../../../../../libs/common/src';
 import { DeliveriesRequestsService, type DeliveryRequestRow } from '../services/deliveries-requests-service';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 
@@ -28,32 +28,27 @@ const STATUS_TONE: Record<string, PcStatusType> = {
 };
 
 /**
- * Deliveries requests grid (spec §4.1). Status tabs with live counts, readiness narration via the
- * shared geocode chip, bulk approve/decline, and the "Plan routes · N ready" primary — disabled
- * when nothing is approved-and-located, since there would be nothing to route.
+ * The Requests tab, embedded in the Canvassing page (turfs-absorb-deliveries Phase 4 —
+ * one module, so nobody has to know which of two sidebar entries their yard signs live
+ * under). Status tabs with live counts, readiness narration via the shared geocode chip,
+ * bulk approve/decline, Add-from-list, and the "Cut into outings · N ready" primary —
+ * which asks the HOST page to open the cut wizard in delivery mode (`cutRequested`),
+ * because the wizard lives there. Disabled when nothing is approved-and-located, since
+ * there would be nothing to send out.
  */
 @Component({
   selector: 'pc-deliveries-requests',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [
-    AddFromListDialog,
-    EmptyState,
-    RouterLink,
-    GeocodeChip,
-    StatusBadge,
-    Icon,
-    DatePipe,
-    TabBar,
-    Table,
-    DeliveriesNav,
-  ],
+  imports: [AddFromListDialog, EmptyState, RouterLink, GeocodeChip, StatusBadge, Icon, DatePipe, TabBar, Table],
   templateUrl: './deliveries-requests.html',
 })
 export class DeliveriesRequests implements OnInit {
   private readonly svc = inject(DeliveriesRequestsService);
   private readonly alerts = inject(AlertService);
-  private readonly router = inject(Router);
   protected readonly loading = createLoadingGate();
+
+  /** "Cut into outings" pressed — the host page owns the cut wizard and opens it in delivery mode. */
+  public readonly cutRequested = output<void>();
 
   protected readonly rows = signal<DeliveryRequestRow[]>([]);
   /** The server's total for the active tab — when it exceeds the loaded rows, the template says so. */
@@ -121,8 +116,18 @@ export class DeliveriesRequests implements OnInit {
     this.selected.set(new Set());
   }
 
-  protected planRoutes(): void {
-    void this.router.navigate(['/deliveries/plan']);
+  protected cutOutings(): void {
+    this.cutRequested.emit();
+  }
+
+  /** "Yard sign" / "Flyer" for the Kind column; an unknown stored value shows as the default. */
+  protected purposeLabel(purpose: string | null): string {
+    return DELIVERY_PURPOSE_LABELS[purpose === 'flyer' ? 'flyer' : 'yard_sign'];
+  }
+
+  /** Re-read the grid — called by the host page after a delivery cut claims requests. */
+  public refresh(): void {
+    void this.reload();
   }
 
   protected readonly addFromListOpen = signal(false);

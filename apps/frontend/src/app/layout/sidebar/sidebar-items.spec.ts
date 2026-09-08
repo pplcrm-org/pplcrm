@@ -85,10 +85,20 @@ describe('SidebarItems', () => {
       }
     });
 
-    /** Every module a mode can switch off must be reachable, or it can never be switched on. */
-    it('gives every optional module exactly one sidebar entry', () => {
+    /**
+     * Every module a mode can switch off must be reachable, or it can never be switched
+     * on. Modules that render as a TAB inside another module's page (deliveries → the
+     * Requests tab on /canvassing, since the Phase-4 absorption) deliberately have no
+     * sidebar entry of their own; their on/off switch lives in Workspace → Modules.
+     */
+    it('gives every optional module exactly one sidebar entry, except tab-hosted modules', () => {
+      const tabHosted: string[] = ['deliveries'];
       for (const id of OPTIONAL_MODULES) {
         const owners = all.filter((item) => item.moduleId === id);
+        if (tabHosted.includes(id)) {
+          expect(owners.length, `tab-hosted module "${id}" must not own a sidebar entry`).toBe(0);
+          continue;
+        }
         expect(owners.length, `module "${id}" should have exactly one entry`).toBe(1);
         expect(owners[0].route, `module "${id}" needs a route`).toBeTruthy();
       }

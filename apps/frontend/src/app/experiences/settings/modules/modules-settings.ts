@@ -17,7 +17,8 @@ import { OrgModeService } from '../../../services/org-mode.service';
 /** What each optional module is, in one line, for the toggle row. */
 const MODULE_BLURBS: Record<ModuleId, string> = {
   canvassing: 'Cut turfs, assign them, and record what happened at each door.',
-  deliveries: 'Collect drop-off requests and plan volunteer routes for them.',
+  deliveries:
+    'Collect drop-off requests and send them out as delivery outings — a Requests tab on the Canvassing page.',
   donations: 'Take online gifts, track pledges, and reconcile what came in.',
   volunteerAccess: 'Approve the volunteers who use the companion apps on their phones.',
 };

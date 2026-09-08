@@ -256,7 +256,11 @@
       <p>Every knock they log updates this table, the person, the household and the Activity log within seconds.</p>
     </div>
   </section>
-  } } @else if (tab() === 'live') {
+  } } @else if (tab() === 'requests') {
+  <!-- The delivery-request pool (the old Deliveries module, absorbed): approve requests,
+       then cut the approved ones into delivery outings without leaving this page. -->
+  <pc-deliveries-requests (cutRequested)="openCutForDelivery()" />
+  } @else if (tab() === 'live') {
   <!-- Live: where the crew is right now. Admin/owner only; the component polls while visible. -->
   <pc-canvass-live-tab />
   } @else {
@@ -548,7 +552,7 @@
     } }
   </section>
   } @if (cutOpen()) {
-  <pc-cut-turfs-dialog (done)="onCutDone($event)" />
+  <pc-cut-turfs-dialog [initialMode]="cutInitialMode()" (done)="onCutDone($event)" />
   } @if (assignTarget(); as target) {
   <pc-assign-turf-dialog
     [turfId]="target.id"

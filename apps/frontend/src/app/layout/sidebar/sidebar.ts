@@ -304,8 +304,15 @@ export class Sidebar {
       if (item.route === '/duplicates') {
         return { ...item, ...(children ? { children } : {}), badgeCount: duplicatesQueue };
       }
-      if (item.route === '/deliveries') {
-        return { ...item, ...(children ? { children } : {}), badgeCount: deliveriesReady };
+      // The delivery-request badge sits on Canvassing (the Requests tab lives there), and
+      // only while the deliveries module is on — an off module must not put a number on
+      // a page where the tab it counts doesn't render.
+      if (item.route === '/canvassing') {
+        return {
+          ...item,
+          ...(children ? { children } : {}),
+          badgeCount: this.orgMode.isEnabled('deliveries') ? deliveriesReady : null,
+        };
       }
       if (item.route === '/volunteer-access') {
         return { ...item, ...(children ? { children } : {}), badgeCount: volunteerPending };

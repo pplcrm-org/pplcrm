@@ -1,11 +1,12 @@
-<div class="mx-auto flex w-full max-w-[980px] flex-col gap-5 p-4">
-  <!-- Header -->
-  <div class="flex flex-wrap items-center justify-end gap-3">
-    <!-- Visible title lives in the navbar breadcrumb; keep an accessible heading only. -->
-    <h1 class="sr-only">Delivery requests</h1>
-    <!-- Surface switch (Requests / Routes) — the underline tab row, sharing this band with the
-         page action the way the People grid's tabs share theirs with the grid toolbar. -->
-    <pc-deliveries-nav class="flex-1" />
+<div class="flex w-full flex-col gap-5">
+  <!-- The guided path, spelled out where the work happens: what this tab is, and what to
+       do next. The primary action starts the delivery cut directly — a non-technical user
+       never has to know which other tab "cutting" lives on. -->
+  <div class="flex flex-wrap items-center gap-3">
+    <p class="min-w-0 flex-1 text-sm text-base-content/60">
+      Yard-sign and flyer requests land here. Approve the ones you want served, then turn the approved ones into
+      delivery outings — batches of doors a volunteer drives with the same phone app canvassers use.
+    </p>
     <div class="flex items-center gap-2">
       <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="addFromListOpen.set(true)">
         Add from list
@@ -13,11 +14,11 @@
       <span
         class="tooltip-left"
         [class.tooltip]="readyCount() === 0"
-        [attr.data-tip]="readyCount() === 0 ? 'Approve and locate some requests before planning a route' : null"
+        [attr.data-tip]="readyCount() === 0 ? 'Approve some requests first — only approved, located requests can go out' : null"
       >
-        <button type="button" class="btn btn-primary btn-sm" [disabled]="readyCount() === 0" (click)="planRoutes()">
+        <button type="button" class="btn btn-primary btn-sm" [disabled]="readyCount() === 0" (click)="cutOutings()">
           <pc-icon name="map-pin" [size]="4"></pc-icon>
-          Plan routes · <span class="tabular-nums">{{ readyCount() }}</span> ready
+          Cut into outings · <span class="tabular-nums">{{ readyCount() }}</span> ready
         </button>
       </span>
     </div>
@@ -63,11 +64,12 @@
   }
 
   <!-- Table -->
-  <pc-table [loading]="loading.visible()" [columns]="8">
+  <pc-table [loading]="loading.visible()" [columns]="9">
     <ng-container pcTableHead>
       <th class="w-8"></th>
       <th>Requested by</th>
       <th>Address</th>
+      <th>Kind</th>
       <th>Status</th>
       <th>Readiness</th>
       <th>Source</th>
@@ -77,11 +79,11 @@
 
     @if (loaded() && rows().length === 0) {
     <tr>
-      <td colspan="8" class="px-6">
+      <td colspan="9" class="px-6">
         @if (readyCount() > 0) {
         <pc-empty-state icon="map-pin" [bordered]="false" title="No delivery requests in this view yet">
-          <button type="button" class="btn btn-primary btn-sm" (click)="planRoutes()">
-            Plan routes · <span class="tabular-nums">{{ readyCount() }}</span> ready
+          <button type="button" class="btn btn-primary btn-sm" (click)="cutOutings()">
+            Cut into outings · <span class="tabular-nums">{{ readyCount() }}</span> ready
           </button>
         </pc-empty-state>
         } @else {
@@ -89,7 +91,7 @@
           icon="map-pin"
           [bordered]="false"
           title="No delivery requests in this view yet"
-          hint="Requests appear here as neighbours ask for a sign — a canvasser tapping “wants a yard sign” in the Canvass Companion creates one, and so does a web form or a teammate adding one by hand. Once some are approved and located, you can plan routes."
+          hint="Requests appear here as neighbours ask for a sign — a canvasser tapping “wants a yard sign” in the Canvass Companion creates one, and so does a web form or a teammate adding one by hand. You can also add many at once with “Add from list”. Once some are approved and located, cut them into delivery outings."
         />
         }
       </td>
@@ -122,6 +124,7 @@
         <a class="hover:text-primary" [routerLink]="['/households', row.household_id]">{{ row.address || '—' }}</a>
         } @else { {{ row.address || '—' }} }
       </td>
+      <td class="whitespace-nowrap text-base-content/70">{{ purposeLabel(row.purpose) }}</td>
       <td><pc-status-badge [type]="statusTone(row.status)">{{ row.status }}</pc-status-badge></td>
       <td>
         <div class="flex items-center gap-2">

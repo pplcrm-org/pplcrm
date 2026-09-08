@@ -10,7 +10,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { DatePipe } from '@angular/common';
-import { Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -32,8 +32,10 @@ import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
 
 import { isPrivilegedRole } from '@common';
 
-import type { FieldReportRangeType, MapViewportType } from '../../../../../../../libs/common/src';
+import type { FieldReportRangeType, MapViewportType, TurfMode } from '../../../../../../../libs/common/src';
 import { TURF_MODE_LABELS } from '../../../../../../../libs/common/src';
+import { DeliveriesRequests } from '../../deliveries/ui/deliveries-requests';
+import { DeliveriesRequestsService } from '../../deliveries/services/deliveries-requests-service';
 import {
   CanvassingService,
   type Coverage,
@@ -71,7 +73,7 @@ import { JoinCodePanel } from '../../volunteer-access/ui/join-code-panel';
 import { OrgModeService } from '../../../services/org-mode.service';
 
 type TurfStatus = TurfListItem['status'];
-type Tab = 'turfs' | 'live' | 'report';
+type Tab = 'turfs' | 'requests' | 'live' | 'report';
 type ReportRange = FieldReportRangeType['range'];
 type CoverageStatus = Coverage['doors'][number]['status'];
 type CoverageView = 'map' | 'boundary';
@@ -161,6 +163,7 @@ const RANGES: { key: ReportRange; label: string }[] = [
     AssignTurfDialog,
     CompanionSettingsDialog,
     JoinCodePanel,
+    DeliveriesRequests,
   ],
   templateUrl: './canvassing-page.html',
 })
@@ -171,7 +174,15 @@ export class CanvassingPage implements OnInit {
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
   private readonly orgMode = inject(OrgModeService);
+  private readonly route = inject(ActivatedRoute);
+  private readonly requestsSvc = inject(DeliveriesRequestsService);
   private readonly destroyRef = inject(DestroyRef);
+
+  /** The embedded Requests tab, so a delivery cut can tell it to re-read its grid. */
+  protected readonly requestsTab = viewChild(DeliveriesRequests);
+
+  /** Which mode card the cut wizard opens on; null = the normal first step. */
+  protected readonly cutInitialMode = signal<TurfMode | null>(null);
 
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
@@ -195,6 +206,19 @@ export class CanvassingPage implements OnInit {
 
   protected readonly pageTabs = computed<PcTabOption[]>(() => {
     const tabs: PcTabOption[] = [{ id: 'turfs', label: 'Turfs & assignments' }];
+    // The old Deliveries module lives here now (turfs-absorb-deliveries Phase 4): one
+    // page, so nobody has to know which of two sidebar entries their yard signs live
+    // under. The tab follows the same module toggle the sidebar entry used to.
+    if (this.orgMode.isEnabled('deliveries')) {
+      const ready = this.requestsReadyCount();
+      tabs.push({
+        id: 'requests',
+        label: 'Requests',
+        ...(ready != null && ready > 0
+          ? { badge: ready, tooltip: `${ready} approved request${ready === 1 ? '' : 's'} ready to go out` }
+          : {}),
+      });
+    }
     if (this.canSeeLive()) {
       const outNow = this.summary()?.outNowCount ?? 0;
       tabs.push({ id: 'live', label: 'Live', live: true, badge: outNow > 0 ? outNow : undefined });
@@ -202,6 +226,9 @@ export class CanvassingPage implements OnInit {
     tabs.push({ id: 'report', label: 'Field report' });
     return tabs;
   });
+
+  /** Approved-and-located request count for the Requests tab badge; null until it loads. */
+  protected readonly requestsReadyCount = signal<number | null>(null);
   protected readonly turfs = signal<TurfListItem[]>([]);
   protected readonly summary = signal<FieldSummary | null>(null);
   protected readonly today = signal<InFieldToday | null>(null);
@@ -283,6 +310,21 @@ export class CanvassingPage implements OnInit {
 
   ngOnInit(): void {
     void this.loadTurfs();
+    void this.loadRequestsReadyCount();
+    // Deep links from the old Deliveries module (/deliveries redirects here with
+    // ?tab=requests) and bookmarks land on the right tab.
+    const wanted = this.route.snapshot.queryParamMap.get('tab');
+    if (wanted) this.selectTab(wanted);
+  }
+
+  /** Requests-tab badge count; quiet on failure — a badge is orientation, not the page's job. */
+  private async loadRequestsReadyCount(): Promise<void> {
+    if (!this.orgMode.isEnabled('deliveries')) return;
+    try {
+      this.requestsReadyCount.set(await this.requestsSvc.getReadyCount());
+    } catch {
+      this.requestsReadyCount.set(null);
+    }
   }
 
   /** Header sentence: "9 turfs · 3 in the field now · 1,412 of 2,860 doors attempted · 2 waiting for a canvasser". */
@@ -563,8 +605,9 @@ export class CanvassingPage implements OnInit {
   }
 
   protected selectTab(tab: string): void {
-    if (tab !== 'turfs' && tab !== 'report' && tab !== 'live') return;
+    if (tab !== 'turfs' && tab !== 'requests' && tab !== 'report' && tab !== 'live') return;
     if (tab === 'live' && !this.canSeeLive()) return;
+    if (tab === 'requests' && !this.orgMode.isEnabled('deliveries')) return;
     this.tab.set(tab);
     if (tab === 'report' && !this.report()) void this.loadReport();
   }
@@ -575,6 +618,17 @@ export class CanvassingPage implements OnInit {
   }
 
   protected openCut(): void {
+    this.cutInitialMode.set(null);
+    this.cutOpen.set(true);
+  }
+
+  /**
+   * "Cut into outings" on the Requests tab: same wizard, opened with the delivery card
+   * already chosen — the user asked for a delivery cut, so the wizard starts on the
+   * question that is actually theirs (what the volunteers carry).
+   */
+  protected openCutForDelivery(): void {
+    this.cutInitialMode.set('delivery');
     this.cutOpen.set(true);
   }
 
@@ -583,6 +637,9 @@ export class CanvassingPage implements OnInit {
     if (created > 0) {
       this.alerts.showSuccess(`Cut ${created} ${created === 1 ? 'turf' : 'turfs'}.`);
       void this.loadTurfs();
+      // A delivery cut claims requests, so the Requests tab's grid and badge are stale.
+      this.requestsTab()?.refresh();
+      void this.loadRequestsReadyCount();
     }
   }
 
