@@ -1504,6 +1504,10 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   ): Promise<{ added: number; removed: number; boundary_map_missing: boolean }> {
     const turf = await this.turfsRepo().getTurfCore({ tenant_id: auth.tenant_id, id: turfId });
     if (!turf) throw new NotFoundError('Turf not found');
+    // A delivery turf's universe is the request pool, never a list. Without this branch a
+    // null list_id would read as the "Everyone" universe below and pour every located
+    // household in the workspace onto a delivery outing.
+    if (turf.mode === 'delivery') return this.refreshFromPool(auth, turf);
     // A null list is the "Everyone" universe — refresh re-resolves it the same
     // way the cut did (every located household), so newly geocoded doors join.
     const members = new Set(await this.resolveUniverseHouseholdIds(auth, turf.list_id));
@@ -1531,6 +1535,121 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       });
 
     return { added: added.length, removed: removed.length, boundary_map_missing: boundaryMapMissing };
+  }
+
+  /**
+   * Re-sync a delivery turf with the request pool — the delivery sibling of `refreshFromList`,
+   * reached through the same endpoint (the mode dispatch above).
+   *
+   * Adds: pool requests (approved, matching purpose, carried by nothing) whose located door
+   * falls in this turf's own area and sits in no turf yet — claimed inside the transaction with
+   * the same `WHERE turf_id IS NULL` guard the cut uses, so a concurrent cut and a refresh
+   * cannot both take one house. Removes: doors this turf no longer carries any request for
+   * (the office declined the request mid-outing and the pointer was cleared). Doors whose
+   * request was DELIVERED stay — the pointer is kept on terminal rows, and the companion
+   * shows the door as served rather than resurrecting it as work.
+   */
+  private async refreshFromPool(
+    auth: IAuthKeyPayload,
+    turf: NonNullable<Awaited<ReturnType<TurfsRepo['getTurfCore']>>>,
+  ): Promise<{ added: number; removed: number; boundary_map_missing: boolean }> {
+    if (turf.campaign_id == null) {
+      throw new BadRequestError('This delivery turf has no campaign, so there is no request pool to read.');
+    }
+    const campaignId = turf.campaign_id;
+    const purpose = turf.delivery_purpose ?? 'both';
+
+    const pool = new Set(
+      await this.deliveries.getPoolHouseholdIds({ tenant_id: auth.tenant_id, campaign_id: campaignId, purpose }),
+    );
+    const current = await this.turfHouseholds.getHouseholdIds({ tenant_id: auth.tenant_id, turf_id: turf.id });
+    const currentSet = new Set(current);
+    // Households this turf still carries a request for, in any status (delivered included).
+    const carried = await this.deliveries.turfDeliveryStates(auth.tenant_id, turf.id);
+    const removed = current.filter((h) => !carried.has(h));
+    const removedSet = new Set(removed);
+
+    // Same map rule as the list refresh: a turf whose named area's map is gone can lose
+    // doors but cannot take new ones — there is no way to tell which addresses belong here.
+    const boundaryMapMissing = turf.boundary_name != null && turf.boundary_set_id == null;
+    const candidates = boundaryMapMissing ? [] : await this.boundaryMembersNotInAnyTurf(auth, turf, pool);
+    const joinable = candidates.filter((h) => !currentSet.has(h));
+
+    // Positions for the drive ordering below, fetched before the transaction (coordinates
+    // don't move): the appended doors' own geo, and the chain start — the last surviving
+    // located door in the stored driving sequence, so the new stops continue the route
+    // instead of restarting it from the centroid.
+    const geoById = new Map<string, { lat: number | null; lng: number | null }>();
+    let chainStart: { lat: number; lng: number } | null = null;
+    if (turf.travel === 'drive' && joinable.length > 0) {
+      const geo = await this.turfsRepo().getHouseholdsGeo({
+        tenant_id: auth.tenant_id,
+        household_ids: joinable,
+        boundary_set_id: null,
+      });
+      for (const d of geo) geoById.set(d.household_id, { lat: d.lat, lng: d.lng });
+      const doors = await this.turfHouseholds.getDoors({ tenant_id: auth.tenant_id, turf_id: turf.id });
+      for (const d of [...doors].reverse()) {
+        if (!removedSet.has(d.household_id) && d.lat != null && d.lng != null) {
+          chainStart = { lat: d.lat, lng: d.lng };
+          break;
+        }
+      }
+    }
+
+    let added: string[] = [];
+    await this.turfsRepo()
+      .transaction()
+      .execute(async (trx) => {
+        await this.turfHouseholds.removeDoors(
+          { tenant_id: auth.tenant_id, turf_id: turf.id, household_ids: removed },
+          trx,
+        );
+        if (joinable.length === 0) return;
+        const claimed = await this.deliveries.claimRequestsForTurf(trx, {
+          tenant_id: auth.tenant_id,
+          campaign_id: campaignId,
+          turf_id: turf.id,
+          household_ids: joinable,
+          purpose,
+          user_id: auth.user_id,
+        });
+        added = joinable.filter((h) => claimed.has(h));
+        const ordered = turf.travel === 'drive' ? this.orderAppendedForDrive(added, geoById, chainStart) : added;
+        await this.turfHouseholds.addDoors(
+          { tenant_id: auth.tenant_id, turf_id: turf.id, household_ids: ordered, user_id: auth.user_id },
+          trx,
+        );
+      });
+
+    return { added: added.length, removed: removed.length, boundary_map_missing: boundaryMapMissing };
+  }
+
+  /**
+   * Order doors appended to a drive turf: a nearest-neighbour chain (2-opt-refined) from the
+   * route's current last located stop, so `addDoors`' appended walk_order numbers continue the
+   * drive. No start (first doors on the turf, or nothing located): from the appended doors'
+   * own mean position. Unlocated doors keep their incoming order at the end.
+   */
+  private orderAppendedForDrive(
+    added: string[],
+    geoById: Map<string, { lat: number | null; lng: number | null }>,
+    chainStart: { lat: number; lng: number } | null,
+  ): string[] {
+    if (added.length < 2) return added;
+    const located: OrderableStop[] = [];
+    const unlocated: string[] = [];
+    for (const id of added) {
+      const geo = geoById.get(id);
+      if (geo?.lat != null && geo.lng != null) located.push({ id, lat: geo.lat, lng: geo.lng });
+      else unlocated.push(id);
+    }
+    if (located.length < 2) return added;
+    const start = chainStart ?? {
+      lat: located.reduce((s, d) => s + d.lat, 0) / located.length,
+      lng: located.reduce((s, d) => s + d.lng, 0) / located.length,
+    };
+    return [...orderStops(start, located), ...unlocated];
   }
 
   // -------------------------------------------------------- assignment ------

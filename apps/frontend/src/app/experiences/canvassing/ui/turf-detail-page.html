@@ -56,7 +56,9 @@
             <li><a [routerLink]="['/canvassing', d.id, 'print']">Print walk map</a></li>
             <!-- Only a turf cut from a list can be re-synced with one. Naming the list
                  in the label is what makes the action legible at all (§2/§3). -->
-            @if (d.list_name) {
+            @if (d.mode === 'delivery') {
+            <li><button type="button" (click)="refreshFromList()">Refresh doors from the request pool</button></li>
+            } @else if (d.list_name) {
             <li><button type="button" (click)="refreshFromList()">Refresh doors from {{ d.list_name }}</button></li>
             } @else {
             <li>

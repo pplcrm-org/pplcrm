@@ -158,6 +158,8 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
     status: string;
     mode: 'canvass' | 'gotv' | 'delivery';
     travel: 'walk' | 'drive';
+    /** What a delivery turf carries (refreshFromPool pulls matching requests); null on other modes. */
+    delivery_purpose: 'yard_sign' | 'flyer' | 'both' | null;
     list_id: string | null;
     boundary_name: string | null;
     boundary_set_id: string | null;
@@ -173,6 +175,7 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
         'status',
         'mode',
         'travel',
+        'delivery_purpose',
         'list_id',
         'boundary_name',
         'boundary_set_id',
@@ -189,6 +192,10 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
       status: String(row.status),
       mode: row.mode === 'gotv' || row.mode === 'delivery' ? row.mode : 'canvass',
       travel: row.travel === 'drive' ? 'drive' : 'walk',
+      delivery_purpose:
+        row.delivery_purpose === 'yard_sign' || row.delivery_purpose === 'flyer' || row.delivery_purpose === 'both'
+          ? row.delivery_purpose
+          : null,
       list_id: row.list_id == null ? null : String(row.list_id),
       boundary_name: row.boundary_name == null ? null : String(row.boundary_name),
       boundary_set_id: row.boundary_set_id == null ? null : String(row.boundary_set_id),

@@ -2429,6 +2429,54 @@ describe('CanvassingController', () => {
       expect(detail.doors.some((d) => d.household_id === target.household_id)).toBe(false);
     });
 
+    it('refresh from the pool: a newly approved request joins (claimed), an orphaned door comes off', async () => {
+      const pool = s.householdIds.slice(0, 3);
+      await seedApproved(pool);
+      await controller.cutTurfs(auth, { doors_per_turf: 20, mode: 'delivery', travel: 'drive' });
+      const turfs = await controller.getTurfs(auth);
+      expect(turfs.length).toBeGreaterThan(0);
+
+      // Approved after the cut — the reason refresh exists.
+      const newcomer = s.householdIds[3];
+      if (!newcomer) throw new Error('expected a fourth household');
+      await seedApproved([newcomer]);
+
+      // A carried request whose pointer was cleared without the door coming off — the
+      // orphan state refresh's prune half exists for. (No normal write path leaves this;
+      // simulated directly.)
+      const orphan = (await requestRows()).find((r) => r.turf_id != null);
+      if (!orphan) throw new Error('expected a carried request');
+      await db
+        .updateTable('delivery_requests')
+        .set({ turf_id: null })
+        .where('tenant_id', '=', s.tenantId)
+        .where('household_id', '=', orphan.household_id)
+        .execute();
+
+      let added = 0;
+      let removed = 0;
+      for (const t of turfs) {
+        const res = await controller.refreshFromList(auth, t.id);
+        added += res.added;
+        removed += res.removed;
+        expect(res.boundary_map_missing).toBe(false);
+      }
+      expect(added).toBe(1);
+      expect(removed).toBe(1);
+
+      const rows = await requestRows();
+      // The newcomer's request is claimed by the outing that took its door.
+      expect(rows.find((r) => r.household_id === newcomer)?.turf_id).not.toBeNull();
+      // The orphan is back in the pool: unclaimed, and its door on no turf.
+      expect(rows.find((r) => r.household_id === orphan.household_id)?.turf_id).toBeNull();
+      const doorSets = await Promise.all(
+        turfs.map(async (t) => (await controller.getTurfDetail(auth, t.id)).doors.map((d) => d.household_id)),
+      );
+      const allDoors = doorSets.flat();
+      expect(allDoors).toContain(newcomer);
+      expect(allDoors).not.toContain(orphan.household_id);
+    });
+
     it("the delivery door taps: deliver writes the knock and flips the carried request; couldn't-deliver and undo follow", async () => {
       const pool = s.householdIds.slice(0, 2);
       await seedApproved(pool);

@@ -225,7 +225,9 @@
                 </li>
                 <!-- Only a cut turf can be re-synced with its universe. Naming the list
                      in the label is what makes the action legible at all (§2/§3). -->
-                @if (t.list_name) {
+                @if (t.mode === 'delivery') {
+                <li><button type="button" (click)="refresh(t)">Refresh doors from the request pool</button></li>
+                } @else if (t.list_name) {
                 <li><button type="button" (click)="refresh(t)">Refresh doors from {{ t.list_name }}</button></li>
                 } @else if (canRefresh(t)) {
                 <li><button type="button" (click)="refresh(t)">Refresh doors — Everyone universe</button></li>

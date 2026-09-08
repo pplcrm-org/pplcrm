@@ -96,6 +96,48 @@ export function refreshFromListExplainer(listName: string, mapMissing = false): 
   );
 }
 
+/**
+ * The delivery counterpart of {@link refreshFromListExplainer}: a delivery turf re-reads
+ * the request pool, not a list. Same promise structure — what stays, what joins, what
+ * leaves, what is kept.
+ */
+export function refreshFromPoolExplainer(mapMissing = false): string {
+  if (mapMissing) {
+    return (
+      'Doors this outing is still carrying requests for stay exactly as they are, and doors whose requests ' +
+      'the office declined are taken off. No new doors can be added automatically: the boundary map this ' +
+      'turf was cut against is no longer available, so there is no way to tell which new addresses belong ' +
+      'here. Deliveries already recorded are kept.'
+    );
+  }
+  return (
+    'Newly approved requests whose address falls inside this outing’s own area are added as doors, and ' +
+    'doors whose requests the office declined are taken off. Doors already delivered stay as they are, ' +
+    'and deliveries already recorded are kept.'
+  );
+}
+
+/** Toast after a delivery turf's pool refresh — the pool sibling of {@link refreshResultMessage}. */
+export function poolRefreshResultMessage(res: {
+  added: number;
+  removed: number;
+  boundary_map_missing?: boolean;
+}): string {
+  const doors = (n: number): string => `${n} ${n === 1 ? 'door' : 'doors'}`;
+  if (res.boundary_map_missing) {
+    const removed = res.removed > 0 ? `${doors(res.removed)} removed.` : 'No doors were removed.';
+    return (
+      `Refreshed from the request pool: ${removed} This outing keeps its doors but cannot take new ones — ` +
+      'the boundary map it was cut against is no longer available. Deliveries already recorded were kept.'
+    );
+  }
+  if (res.added === 0 && res.removed === 0) return 'This outing already matches the request pool. Nothing changed.';
+  const parts: string[] = [];
+  if (res.added > 0) parts.push(`${doors(res.added)} added`);
+  if (res.removed > 0) parts.push(`${doors(res.removed)} removed`);
+  return `Refreshed from the request pool: ${parts.join(', ')}. Deliveries already recorded were kept.`;
+}
+
 /** Mirrors `nameSchema('Name', 120)` on `UpdateTurfObj` — checked here so an over-long
  *  name is caught in the user's words instead of coming back as a validation error. */
 export const TURF_NAME_MAX_LENGTH = 120;

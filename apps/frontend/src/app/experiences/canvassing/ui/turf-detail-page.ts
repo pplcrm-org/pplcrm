@@ -34,7 +34,9 @@ import {
   TURF_STATUS_HINT,
   TURF_STATUS_LABEL,
   TURF_STATUS_TONE,
+  poolRefreshResultMessage,
   refreshFromListExplainer,
+  refreshFromPoolExplainer,
   refreshResultMessage,
   renameResultMessage,
   renameTurfPrompt,
@@ -435,12 +437,16 @@ export class TurfDetailPage {
 
   protected async refreshFromList(): Promise<void> {
     const detail = this.detail();
-    const listName = detail?.list_name;
-    if (!detail || !listName) return;
+    if (!detail) return;
+    // A delivery turf re-reads the request pool; any other turf needs a list to re-read.
+    const isDelivery = detail.mode === 'delivery';
+    const listName = detail.list_name;
+    if (!isDelivery && !listName) return;
     const mapMissing = detail.boundary_name != null && detail.boundary_set_id == null;
     const ok = await this.confirm.confirm({
-      title: `Re-read "${listName}"?`,
-      message: refreshFromListExplainer(listName, mapMissing),
+      title: isDelivery ? 'Re-check the request pool?' : `Re-read "${listName}"?`,
+      message:
+        isDelivery || !listName ? refreshFromPoolExplainer(mapMissing) : refreshFromListExplainer(listName, mapMissing),
       confirmText: 'Refresh doors',
     });
     if (!ok) return;
@@ -448,7 +454,9 @@ export class TurfDetailPage {
     const end = this._loading.begin();
     try {
       const res = await this.svc.refreshFromList(this.id());
-      this.alerts.showSuccess(refreshResultMessage(listName, res));
+      this.alerts.showSuccess(
+        isDelivery || !listName ? poolRefreshResultMessage(res) : refreshResultMessage(listName, res),
+      );
       await this.load();
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to refresh turf.');

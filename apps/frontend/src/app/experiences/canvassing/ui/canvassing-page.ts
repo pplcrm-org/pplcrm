@@ -59,7 +59,9 @@ import {
   turfUniverseLine,
   turfWalkedBucket,
   turfWalkedPct,
+  poolRefreshResultMessage,
   refreshFromListExplainer,
+  refreshFromPoolExplainer,
   refreshResultMessage,
   renameResultMessage,
   renameTurfPrompt,
@@ -647,12 +649,14 @@ export class CanvassingPage implements OnInit {
 
   protected async refresh(t: TurfListItem): Promise<void> {
     if (!this.canRefresh(t)) return;
-    // The Everyone universe has no list row; the explainer names it the way the wizard did.
+    // A delivery turf re-reads the request pool; every other turf re-reads its list
+    // (the Everyone universe has no list row; the explainer names it the way the wizard did).
+    const isDelivery = t.mode === 'delivery';
     const universeName = t.list_name ?? 'Everyone';
     const mapMissing = t.boundary_name != null && t.boundary_set_id == null;
     const ok = await this.dialog.confirm({
-      title: `Re-read "${universeName}"?`,
-      message: refreshFromListExplainer(universeName, mapMissing),
+      title: isDelivery ? 'Re-check the request pool?' : `Re-read "${universeName}"?`,
+      message: isDelivery ? refreshFromPoolExplainer(mapMissing) : refreshFromListExplainer(universeName, mapMissing),
       confirmText: 'Refresh doors',
     });
     if (!ok) return;
@@ -660,7 +664,7 @@ export class CanvassingPage implements OnInit {
     const end = this._loading.begin();
     try {
       const res = await this.svc.refreshFromList(t.id);
-      this.alerts.showSuccess(refreshResultMessage(universeName, res));
+      this.alerts.showSuccess(isDelivery ? poolRefreshResultMessage(res) : refreshResultMessage(universeName, res));
       await this.loadTurfs();
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to refresh turf.');
