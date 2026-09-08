@@ -21,7 +21,6 @@ const HELP_DOORS: Readonly<Record<string, string>> = {
   canvassing: 'canvassing',
   companies: 'companies',
   dashboard: 'dashboard',
-  deliveries: 'deliveries',
   'donation-pages': 'donations',
   donations: 'donations',
   duplicates: 'duplicates',

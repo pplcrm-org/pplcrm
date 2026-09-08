@@ -298,9 +298,9 @@ const POLITICAL_CHART: CompareCategoryChart = {
       ],
     },
     {
-      job: 'Yard signs: from doorstep answer to delivery route',
+      job: 'Yard signs: from doorstep answer to delivery outing',
       pplcrm:
-        'A “wants a sign” answer at the door becomes a request; requests become hour-sized driving routes with a one-stop driver page.',
+        'A “wants a sign” answer at the door becomes a request; approved requests are cut into delivery outings volunteers drive with the offline companion app.',
       cells: [
         {
           verdict: 'not-offered',
@@ -392,7 +392,7 @@ const COMMUNITY_CHART: CompareCategoryChart = {
   ],
   rows: [
     {
-      job: 'Door-to-door visits, drives and delivery routes',
+      job: 'Door-to-door visits, drives and delivery outings',
       pplcrm:
         'Visits and drives run as turfs and hour-sized routes, with account-less phone pages for the volunteers who walk and drive them.',
       cells: [

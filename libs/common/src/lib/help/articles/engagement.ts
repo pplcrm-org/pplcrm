@@ -621,11 +621,11 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'Survey answers do real work: a support level updates the person’s support reading for the turf’s [campaign](/workspace/campaigns), **Wants a yard sign** drops a request straight into the [Deliveries](/deliveries) intake pool, **Wants to volunteer** sets their volunteer status to Prospective on the person record, **65 or older** records their age band on the person record so you can build a seniors list, contact details fill in blanks on the person record, and **Do not contact** suppresses them everywhere, immediately.',
+        text: 'Survey answers do real work: a support level updates the person’s support reading for the turf’s [campaign](/workspace/campaigns), **Wants a yard sign** drops a request straight into the delivery [Requests tab](/deliveries), **Wants to volunteer** sets their volunteer status to Prospective on the person record, **65 or older** records their age band on the person record so you can build a seniors list, contact details fill in blanks on the person record, and **Do not contact** suppresses them everywhere, immediately.',
       },
       {
         kind: 'p',
-        text: 'A canvasser carrying signs can also **deliver one at the door**. When a household has asked for a sign, the door screen says so and offers **I delivered the sign**; tapping it records the same “delivered” status a driver would record, and — this is the part that matters — closes that house’s stop on whichever delivery route it was sitting on, so nobody is sent to a lawn that already has its sign. If the whole route was waiting on that one house, the route completes itself. **Undo** on the same card puts the sign back on the list and reopens the stop.',
+        text: 'A canvasser carrying signs can also **deliver one at the door**. When a household has asked for a sign, the door screen says so and offers **I delivered the sign**; tapping it records the same “delivered” status a delivery outing would record, so the request stops showing as owed everywhere — including on a delivery outing that was carrying it, where the door shows as already served. **Undo** on the same card puts the sign back on the list.',
       },
       {
         kind: 'p',
@@ -698,20 +698,20 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
   {
     id: 'deliveries',
     category: 'engagement',
-    title: 'Deliveries and volunteer routes',
+    title: 'Yard signs, flyers and delivery outings',
     summary:
-      'Collect delivery requests, turn approved ones into about-an-hour driving routes, and hand each route to a volunteer through a private link, no volunteer account needed.',
-    keywords: ['yard sign', 'delivery', 'route', 'volunteer', 'sign', 'drive', 'stops', 'plan routes', 'canvass drop'],
-    related: ['events-shifts', 'teams', 'forms', 'households'],
+      'Collect yard-sign and flyer requests, approve them on the Requests tab of the Canvassing page, and send them out as delivery outings volunteers drive with the companion app.',
+    keywords: ['yard sign', 'delivery', 'flyer', 'requests', 'outing', 'volunteer', 'sign', 'drive', 'canvass drop'],
+    related: ['canvassing', 'events-shifts', 'teams', 'forms', 'households'],
     blocks: [
       {
         kind: 'p',
-        text: 'Deliveries turns sign requests into optimized driving routes and hands each one to a volunteer. Open [Deliveries](/deliveries) under **Field** in the sidebar. The badge shows how many requests are approved and ready to route. A **Requests / Routes** switch at the top of the page flips between the incoming request pool and the routes you have already planned. **Routes** carries a count whenever volunteers are out delivering: it is the number of routes in progress, not the total number of routes, so an empty count means nobody has started one yet. The **Plan routes** button stays disabled until at least one request is approved and located. There is nothing to route before then.',
+        text: 'Deliveries live inside [Canvassing](/canvassing): the **Requests** tab holds every yard-sign and flyer request, and approved requests go out as **delivery outings** — batches of doors cut and handed to volunteers exactly like canvassing turfs, in the same phone app. There is one flow to learn: requests come in, you approve the good ones, you press **Cut into outings**, and you put a volunteer on each outing. The tab wears a badge with how many approved, located requests are ready to go out, and the same number sits on the Canvassing entry in the sidebar.',
       },
       { kind: 'h2', id: 'requests', text: 'Requests: approve what comes in' },
       {
         kind: 'p',
-        text: 'Every request is tied to a household, so its map location comes from the household’s address. The **Readiness** chip tells you the geocode state (**Located**, **Locating…**, or **Address problem**), and a request must be approved and located to be routed. Select rows and use **Approve** or **Decline** in the selection bar; the count is repeated on every button.',
+        text: 'Every request is tied to a household, so its map location comes from the household’s address. The **Readiness** chip tells you the geocode state (**Located**, **Locating…**, or **Address problem**), and a request must be approved and located before it can go out. Select rows and use **Approve** or **Decline** in the selection bar; the count is repeated on every button. The **Kind** column says what the household is owed — a yard sign or a flyer.',
       },
       {
         kind: 'p',
@@ -719,71 +719,57 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: '**Add from list** (top of the requests grid) is the bulk targeting path — “flyer this neighbourhood” as one action. Pick any [list](/lists) and a kind (yard signs or flyers), and one **approved** request is created per household in it, ready to cut into [delivery outings](/help/canvassing). It skips households that asked not to be contacted, households already owed one of the same kind, and stops at 5,000 households per run — the result message reports each number, and running it again picks up where the cap stopped.',
+        text: '**Add from list** (top of the tab) is the bulk targeting path — “flyer this neighbourhood” as one action. Pick any [list](/lists) and a kind (yard signs or flyers), and one **approved** request is created per household in it, ready to cut. It skips households that asked not to be contacted, households already owed one of the same kind, and stops at 5,000 households per run — the result message reports each number, and running it again picks up where the cap stopped.',
       },
       {
         kind: 'callout',
         tone: 'tip',
         title: 'Address problem?',
-        text: 'A request that can’t be located shows an **Edit household** link right on the row. Fixing the address there re-triggers geocoding automatically. The request becomes routable on its own.',
+        text: 'A request that can’t be located shows an **Edit household** link right on the row. Fixing the address there re-triggers geocoding automatically. The request becomes ready on its own.',
       },
-      { kind: 'h2', id: 'plan', text: 'Plan routes (preview first)' },
+      { kind: 'h2', id: 'outings', text: 'Cut approved requests into delivery outings' },
       {
         kind: 'steps',
         items: [
           {
-            title: 'Click Plan routes · N ready',
+            title: 'Press Cut into outings · N ready',
             detail:
-              'Set the start address drivers leave from. Start typing and pick a suggested address. It’s remembered for next time.',
+              'It opens the turf-cutting wizard with **Sign & flyer delivery** already chosen. Pick what the volunteers carry — yard signs, flyers, or both (one trip serves both kinds at a door) — then how many doors per outing. Delivery outings default to **by car**, so doors come in a driving order.',
           },
           {
-            title: 'Preview routes',
+            title: 'Put a volunteer on each outing',
             detail:
-              'Preview is a pure calculation. It doesn’t save anything. You’ll see proposed routes, per-stop travel times, and an honest explanation of anything that couldn’t fit.',
+              'Same as any turf: assign a volunteer (their personal link is sent automatically by email or text), or let approved volunteers pick outings up themselves where roaming is on. Cutting claims the requests, so two outings can never be sent to the same lawn; each request’s row says which outing is carrying it.',
           },
           {
-            title: 'Create N routes',
-            detail: 'Only now is anything saved. All the routes are created together and you land on the routes list.',
+            title: 'Volunteers deliver from their phone',
+            detail:
+              'Each door offers **Delivered**, **Couldn’t deliver** (with a reason you see back on the request), and **Navigate**; the list is ordered for driving, with the next stop ringed and an “open the next stops in Google Maps” button for turn-by-turn. It all works offline, like any canvass.',
           },
         ],
       },
-      { kind: 'h2', id: 'assign', text: 'Assign and share' },
       {
         kind: 'p',
-        text: 'On a route, assign the volunteer first. The link is personal to them. Click **Assign** next to Volunteer, search by name or email, and pick the person (use **Change** or **Remove volunteer** to swap or clear them later). Assigning **sends the volunteer their private link automatically** by email and text, using whichever contacts their person record has on file — no contact on file, and the app warns you to share the link yourself via **Copy volunteer link** (note that copying mints a fresh link, which replaces the one that was sent). If the message went missing — or the volunteer’s contact details changed — pick **Resend link to volunteer** from the route’s ⋯ menu: it emails/texts them a fresh link (the old one stops working). The link expires after 30 days as a security safeguard, unless an administrator turns expiry off under **Workspace → App** (handy when routes run longer than a month). You can do all of this without opening the route: the **Routes** list has an inline **Assign** on any unassigned row, and each row’s ⋯ menu covers assign/change volunteer, copy or resend the link, and cancel or delete the route. Like the Canvass Companion, the volunteer verifies a one-time code sent to their email or mobile on file, and a first-time volunteer needs a one-time admin approval on the Volunteer access page. Reorder the stops that are still pending by dragging one by its handle, or use the up and down arrows for the same move by keyboard; delivered and skipped stops stay where they are. Either way the estimate recomputes for you. Revoke or regenerate the link any time from the ⋯ menu.',
-      },
-      { kind: 'h2', id: 'route-map', text: 'See the route on a map' },
-      {
-        kind: 'p',
-        text: 'Every route shows its own map: a pin for the start address, then one numbered pin per stop in visit order, coloured by what happened at that door (to deliver, delivered, couldn’t deliver). The dotted line is the visit order, not the driving path; our estimate measures distance between houses, not roads. **Open in Google Maps**, just above the map, launches turn-by-turn driving for the whole route. A stop whose household address hasn’t been located yet can’t be drawn, so the page says how many are missing instead of quietly leaving them out.',
-      },
-      { kind: 'h2', id: 'deliver', text: 'Volunteers deliver' },
-      {
-        kind: 'p',
-        text: 'The volunteer opens the link on their phone and works one stop at a time: **Mark delivered**, **Couldn’t deliver** (with a reason), or **Skip for now** (moves the house to the end). The page shows first name and address only, never a constituent’s email or phone. Undo is available on any delivered or skipped stop, even after closing and reopening the page. A house reported undeliverable returns to your planning pool automatically, and when every stop is handled the route finishes itself.',
-      },
-      {
-        kind: 'callout',
-        tone: 'info',
-        title: 'One source of truth',
-        text: 'A request is “on a route” only while it has an active stop. There’s no separate flag to fall out of sync. Skip or remove a stop and the request is instantly back in the pool for the next batch.',
+        text: 'Requests approved after the cut? **Refresh doors from the request pool** (in the outing’s row menu) pulls them in and drops doors whose requests were declined; doors already delivered stay put. Retiring an outing returns its undelivered requests to the pool for the next batch. Declining a request mid-outing takes its door off the volunteer’s list. See [Canvassing](/help/canvassing) for everything outings share with turfs — assignment, join QR codes, progress, the field report.',
       },
       {
         kind: 'p',
-        text: 'A stop can also be closed by somebody who never opened the route. Canvassers carrying signs can mark one delivered from the door in the [Canvass Companion](/help/canvassing), and that closes the stop here — so a driver who reloads their route finds that house already ticked instead of driving to a lawn that has its sign. It counts toward the route the same way, including finishing the route when it was the last stop.',
-      },
-      {
-        kind: 'p',
-        text: 'Delivery is also an [automation](/help/automations) trigger: the moment a request reaches **Delivered** — by a driver, a canvasser at the door, or a staff flip — the person who asked for the sign can enter a sequence on the **Yard sign delivered** trigger, so the thank-you goes out while the sign is still news. A request with no named requester enrolls nobody.',
+        text: 'Delivery is also an [automation](/help/automations) trigger: the moment a request reaches **Delivered** — by a delivery volunteer, a canvasser at the door, or a staff flip — the person who asked for the sign can enter a sequence on the **Yard sign delivered** trigger, so the thank-you goes out while the sign is still news. A request with no named requester enrolls nobody.',
       },
       { kind: 'h2', id: 'standing', text: 'Yard sign standing on profiles' },
       {
         kind: 'p',
-        text: 'You don’t have to open Deliveries to check a sign. Every household page carries a **Yard sign** card, and every person page shows the same control inside the **Campaign standing** card, right next to support level and voting status. It reads straight from the request pool for the campaign you are working in: **None requested**, **Requested**, **Approved**, **Declined**, or **Delivered**, with who asked, where it came from, and a link to the route it is riding on.',
+        text: 'You don’t have to open the Requests tab to check a sign. Every household page carries a **Yard sign** card, and every person page shows the same control inside the **Campaign standing** card, right next to support level and voting status. It reads straight from the request pool for the campaign you are working in: **None requested**, **Requested**, **Approved**, **Declined**, or **Delivered**, with who asked, where it came from, and a link to the outing carrying it.',
       },
       {
         kind: 'p',
-        text: 'Flip the status yourself when reality happens outside the app. Pick **Delivered** if someone installed a sign by hand, or record a brand-new request for a household that asked in person. If the house is sitting on an active route when you mark it delivered, the route’s stop is marked delivered too, so volunteer progress stays truthful. The change lands in the household’s and requester’s activity history.',
+        text: 'Flip the status yourself when reality happens outside the app. Pick **Delivered** if someone installed a sign by hand, or record a brand-new request for a household that asked in person. The change lands in the household’s and requester’s activity history.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Had driving routes before?',
+        text: 'The separate route-planning pages are gone: every route that was still live was converted into a delivery outing with the same doors in the same order, waiting under Canvassing for a volunteer to be re-assigned (assigning sends them a fresh link). Old volunteer route links show a “this link has moved” note. Delivered history is untouched.',
       },
     ],
   },

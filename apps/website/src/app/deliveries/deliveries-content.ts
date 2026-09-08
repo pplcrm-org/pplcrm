@@ -2,28 +2,33 @@ import { ADDRESSES, type Feature } from '../home/audience-content';
 import type { Limit } from '../districts/districts-content';
 
 /**
- * Copy and mock data for the /deliveries page — yard-sign requests, route planning and the
- * volunteer delivery page.
+ * Copy and mock data for the /deliveries page — yard-sign and flyer requests, and the
+ * delivery outings that carry them (the driving-route system retired in the 2026-09
+ * turfs-absorb-deliveries consolidation; delivery work goes out as delivery-mode turfs).
  *
  * Everything here is a factual claim about what the product does, so it is governed by the
  * `pplcrm-website-claims` registry. The sources of truth:
  *
- *  - routes sized to about an hour, deterministic, no external routing API, named leftover
- *    buckets → `apps/backend/src/app/lib/routing/` (`route-constants.ts`: TARGET_ROUTE_MINUTES
- *    60, SHARE_TOKEN_TTL_DAYS 30; `plan-routes.ts`)
- *  - preview-then-commit (preview is a pure calculation that writes nothing) and "routed is
- *    derived, never stored" (a request is on a route only while it has a live pending stop,
- *    enforced by a partial unique index) → `apps/backend/src/app/modules/deliveries`
- *  - the volunteer page carrying first name and address ONLY, undo on terminal stops, skip
- *    moving a stop to the end, an undeliverable stop returning the request to the planning
- *    pool → `apps/companion/src/app/deliveries/route-page.ts` (route `/r/:token`)
- *  - assignment minting a fresh link and sending it by email and text in the same
- *    transaction; re-assigning invalidating the old link → the deliveries controller +
- *    `lib/mail/volunteer-link-notify.ts`
- *  - link expiry as a live workspace policy (30 days by default, switchable off) → the
- *    workspace App settings + deliveries token checks
- *  - a canvasser marking a sign delivered at the door closing that house's stop on whatever
- *    route it was on → the companion canvass survey side-effects
+ *  - requests live on the Requests tab of the Canvassing page; one open request per
+ *    household per kind (yard sign / flyer), enforced by a partial unique index →
+ *    `apps/backend/src/app/modules/deliveries` (repo + controller)
+ *  - cutting an outing CLAIMS its requests (the stored `delivery_requests.turf_id`
+ *    pointer, taken with a race-safe `WHERE turf_id IS NULL` update), so two outings can
+ *    never be sent to the same lawn; retiring an outing returns undelivered requests to
+ *    the pool → same module + `modules/canvassing/controller.ts`
+ *  - the driving order is computed deterministically on our servers from distances
+ *    between houses (nearest-neighbour + 2-opt in `lib/routing/plan-routes.ts`); no
+ *    third-party routing service ever sees addresses — Navigate/Google-Maps links are
+ *    built on the volunteer's own phone
+ *  - the volunteer app is the same offline canvassing companion (`apps/companion`):
+ *    Delivered / Couldn't deliver (reason) / Undo per door, per-stop Navigate, a
+ *    next-stops Google Maps chain, the queue synced when signal returns
+ *  - what a volunteer sees: residents' names, the address, and door history — never
+ *    emails, phone numbers or donation history (`CompanionTurfPayload`)
+ *  - assignment sending the personal link by email and text; re-assigning rotating it →
+ *    `modules/canvassing/controller.ts` (assignTurf) + `lib/mail/volunteer-link-notify.ts`
+ *  - "Add from list" bulk intake (approved request per eligible household; DNC skipped) →
+ *    `addRequestsFromList` in the deliveries controller
  *  - the yard-sign standing card on household and person pages → experiences/households +
  *    experiences/persons
  *  - plan gating (deliveries and companions are Movement; a demo workspace gates as
@@ -33,7 +38,7 @@ import type { Limit } from '../districts/districts-content';
  * that is not read off the code.
  */
 
-/** The life of a request, told in the pipeline strip. "On a route" is computed, never stored. */
+/** The life of a request, told in the pipeline strip. "Out for delivery" is a claim, not a checkbox. */
 export interface RequestStage {
   readonly n: string;
   readonly title: string;
@@ -44,7 +49,7 @@ export const REQUEST_STAGES: readonly RequestStage[] = [
   {
     n: '1',
     title: 'Asked at the door',
-    body: 'A canvasser taps “wants a yard sign” in the companion, or a teammate records the request in the CRM. Either way it lands in one queue — nothing lives in a text thread.',
+    body: 'A canvasser taps “wants a yard sign” in the companion, a supporter checks the box on your web form, or a teammate records it in the CRM. Either way it lands in one queue — nothing lives in a text thread.',
   },
   {
     n: '2',
@@ -53,28 +58,23 @@ export const REQUEST_STAGES: readonly RequestStage[] = [
   },
   {
     n: '3',
-    title: 'On a route',
-    body: 'Not a checkbox — a fact. A request counts as routed only while it actually has a live stop on a route. Remove or skip the stop and the request is instantly back in the pool.',
+    title: 'Out with an outing',
+    body: 'Cutting a delivery outing claims its requests, so two outings can never be sent to the same lawn. Each request’s row names the outing carrying it; retire the outing and its undelivered requests return to the pool.',
   },
   {
     n: '4',
     title: 'Delivered',
-    body: 'Marked by the driver on the route page, by a canvasser planting the sign at the door, or by a teammate in the CRM. All three close the same stop.',
+    body: 'Marked by the volunteer at the door, by a canvasser planting the sign mid-walk, or by a teammate in the CRM. All three flip the same request.',
   },
 ];
 
-/** One stop pin on the route-map mock, in the mock's 320×220 viewBox. */
+/** One door pin on the outing-map mock, in the mock's 320×220 viewBox. */
 export interface RouteStop {
   readonly n: number;
   readonly x: number;
   readonly y: number;
   readonly delivered?: true;
 }
-
-/** The dotted visit-order line. Dotted on purpose: it is the order, not a road path. */
-export const ROUTE_LINE = '44,112 84,64 148,52 214,70 268,58 288,118 232,158';
-
-export const ROUTE_START = { x: 44, y: 112 } as const;
 
 export const ROUTE_STOPS: readonly RouteStop[] = [
   { n: 1, x: 84, y: 64, delivered: true },
@@ -85,7 +85,7 @@ export const ROUTE_STOPS: readonly RouteStop[] = [
   { n: 6, x: 232, y: 158 },
 ];
 
-/** The planner's side panel: proposed routes plus the leftovers, named. */
+/** The cut panel beside the map mock: proposed outings plus the leftovers, named. */
 export interface PanelRoute {
   readonly name: string;
   readonly detail: string;
@@ -93,76 +93,76 @@ export interface PanelRoute {
 }
 
 export const PANEL_ROUTES: readonly PanelRoute[] = [
-  { name: 'Route 1 · Dana', detail: '6 stops · about 55 min' },
-  { name: 'Route 2 · unassigned', detail: '8 stops · about 50 min' },
-  { name: 'Didn’t fit', detail: '2 too far from start · 1 isolated', muted: true },
+  { name: 'Outing 1 · signs & flyers', detail: '12 doors · by car' },
+  { name: 'Outing 2 · signs & flyers', detail: '9 doors · by car' },
+  { name: 'Not placed yet', detail: '2 addresses still locating', muted: true },
 ];
 
-/** What the planner promises, stated as three cards under the route-map mock. */
+/** What cutting promises, stated as three cards under the outing-map mock. */
 export const PLANNING_CARDS: readonly Feature[] = [
   {
     icon: 'map',
-    title: 'Preview writes nothing',
-    body: 'Type a start address and the planner proposes routes with per-stop travel times — as a pure calculation. Anything that could not fit is named, not hidden: too far from the start, or isolated. Only “Create routes” saves.',
+    title: 'One button from pile to outings',
+    body: 'Press “Cut into outings” on the Requests tab and the wizard opens with delivery already chosen: pick signs, flyers or both, pick how many doors per outing, and the approved pile becomes batches a volunteer can say yes to. Anything without a map position is named, not hidden.',
   },
   {
     icon: 'clock',
-    title: 'Routes sized to about an hour',
-    body: 'A route targets roughly 60 minutes of driving and planting, because “can you take one route tonight?” is an ask a volunteer says yes to. The math is deterministic and runs on our servers — no third-party routing service ever sees your addresses.',
+    title: 'Doors come in driving order',
+    body: 'A delivery outing’s doors are ordered for a car, not a walker’s street sweep. The math is deterministic and runs on our servers — no third-party routing service ever sees your addresses.',
   },
   {
     icon: 'arrow-top-right-on-square',
     title: 'Turn-by-turn when you want it',
-    body: 'The visit order draws as a dotted line — it is an order, not a road path. One tap builds the whole route as a Google Maps link with every stop as a waypoint, for the driver who wants voice directions.',
+    body: 'On the volunteer’s phone, every stop has a Navigate button, and one tap opens the next stretch of stops in Google Maps as a waypoint chain, for the driver who wants voice directions.',
   },
 ];
 
-/** The volunteer route page, from apps/companion (/r/:token). */
+/** The volunteer's delivery outing, from apps/companion (the same app canvassers use). */
 export const VOLUNTEER_POINTS: readonly Feature[] = [
   {
     icon: 'phone',
     title: 'A link is the whole app',
-    body: 'Assigning a driver mints their personal link and sends it by email and text in the same moment. No install, no account — and re-assigning the route invalidates the old link automatically.',
+    body: 'Assigning a volunteer sends their personal link by email and text in the same moment. No install, no account — re-assigning rotates the link, and every volunteer verifies a one-time code and is approved once by an admin.',
   },
   {
     icon: 'queue-list',
-    title: 'One stop at a time',
-    body: 'The page shows the current stop and three honest buttons: Delivered, Couldn’t deliver (with a reason), and Skip for now, which moves the house to the end instead of pretending it is done.',
+    title: 'The next stop, ringed',
+    body: 'The outing is a numbered stop list with the next undone door ringed, and two honest buttons on every row: Delivered, and Couldn’t deliver — which asks for a reason your office sees on the request.',
   },
   {
-    icon: 'arrow-uturn-left',
-    title: 'Undo survives a reload',
-    body: 'Fat-fingered “Delivered” at a red light? Any finished stop can be undone — even after the page reloads. The last handled stop completes the route.',
+    icon: 'cloud-arrow-up',
+    title: 'Works in a dead zone',
+    body: 'It is the same offline-first companion canvassers use: taps queue on the phone and sync back when signal returns, and Undo is right there for the fat-fingered “Delivered” at a red light.',
   },
   {
     icon: 'lock-closed',
-    title: 'First name and address. Nothing else.',
-    body: 'The driver’s page carries exactly what planting a sign needs: a first name and an address. No phone numbers, no emails, no donation history — a lost phone leaks a delivery list, not your voter file.',
+    title: 'No emails, no phones, no donations',
+    body: 'The volunteer sees what the doorstep needs — who lives there, the address, and what happened at the door before. Never an email, a phone number or a donation history. A lost phone leaks a door list, not your voter file.',
   },
   {
     icon: 'arrow-path',
-    title: 'A failed stop routes itself back',
-    body: 'Mark a house undeliverable and its request returns to the planning pool on its own, ready for the next route. Nobody keeps a list of leftovers in their head.',
+    title: 'A failed stop stays owed',
+    body: 'Mark a door “couldn’t deliver” and the request stays with the outing for a retry, reason attached. Retire the outing and every undelivered request returns to the pool on its own. Nobody keeps a list of leftovers in their head.',
   },
 ];
 
-/** Standing that shows up outside the Deliveries pages. */
+/** Standing that shows up outside the Requests tab. */
 export const STANDING_CARDS: readonly Feature[] = [
   {
     icon: 'yard-sign',
     title: 'Standing follows the household',
-    body: 'Every household page — and the campaign card on every person — shows where the sign request stands: none, requested, approved, declined or delivered, with who asked and a link to the route it rides on.',
+    body: 'Every household page — and the campaign card on every person — shows where the sign request stands: none, requested, approved, declined or delivered, with who asked and a link to the outing carrying it.',
   },
   {
     icon: 'hand-thumb-up',
     title: 'The canvasser closes the loop',
-    body: 'A canvasser carrying signs can mark one delivered right at the door. That closes the house’s stop on whatever route it was on — and if it was the last stop, the route completes itself.',
+    body: 'A canvasser carrying signs can mark one delivered right at the door. The request flips everywhere at once — including on a delivery outing that was carrying it, where the door shows as already served.',
   },
 ];
 
 /**
- * The driver's phone mock. First names only — the mock must obey the same payload rule the
- * real page does, so it shows exactly a first name and an address per stop.
+ * The volunteer's phone mock. It must obey the same payload rule the real app does:
+ * residents' names and addresses, nothing else.
  */
 export interface DriverStop {
   readonly addr: string;
@@ -170,13 +170,13 @@ export interface DriverStop {
 }
 
 export const DRIVER_MOCK = {
-  context: 'Route 1 · Yard signs',
+  context: 'Maple outing · Signs & flyers',
   progress: 'Stop 3 of 6',
   delivered: '2 delivered',
-  current: { addr: ADDRESSES[2], who: 'Denise' } satisfies DriverStop,
+  current: { addr: ADDRESSES[2], who: 'Denise Tran' } satisfies DriverStop,
   next: [
-    { addr: ADDRESSES[3], who: 'Priya' },
-    { addr: ADDRESSES[4], who: 'Marcus' },
+    { addr: ADDRESSES[3], who: 'Priya Patel' },
+    { addr: ADDRESSES[4], who: 'Marcus Webb' },
   ] satisfies readonly DriverStop[],
 } as const;
 
@@ -184,17 +184,17 @@ export const DRIVER_MOCK = {
 export const LIMITS: readonly Limit[] = [
   {
     icon: 'map-pin',
-    title: 'Routing needs located addresses',
-    body: 'A request joins a route once its address is placed on the map. Address lookups run on the Movement plan, spread over a daily budget, and a request that cannot be placed says so on its row — with a link to fix the address — rather than being silently skipped.',
+    title: 'Outings need located addresses',
+    body: 'A request joins an outing once its address is placed on the map. Address lookups run on the Movement plan, spread over a daily budget, and a request that cannot be placed says so on its row — with a link to fix the address — rather than being silently skipped.',
   },
   {
     icon: 'paper-airplane',
-    title: 'The driver’s page needs a signal',
-    body: 'Unlike the canvass companion, the delivery page talks to the server as you go, so it needs a connection. Drivers are in a car in town, not a dead zone on foot — but we would rather say it than have you find out.',
+    title: 'The order is distance math, not roads',
+    body: 'The driving order is computed from distances between houses on our servers — it does not know about one-way streets or bridges. That is why every stop hands you to Google Maps for the actual roads, and why we don’t promise per-stop minutes.',
   },
   {
     icon: 'banknotes',
     title: 'Deliveries is a Movement feature',
-    body: 'Requests, route planning and the driver’s page are on the Movement plan. Every new workspace’s demo data unlocks all of it, so you can plan routes over demo households before paying anything.',
+    body: 'Requests, delivery outings and the volunteer app are on the Movement plan. Every new workspace’s demo data unlocks all of it, so you can send out demo outings before paying anything.',
   },
 ];

@@ -240,7 +240,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'house-modern',
         title: 'Deliveries',
-        body: 'Notices, newsletters and meeting invitations become routes with per-street progress for volunteer drivers.',
+        body: 'Notices, newsletters and meeting invitations become delivery outings with live progress for volunteer drivers.',
       },
     ],
     field: {
@@ -347,7 +347,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'house-modern',
         title: 'Deliveries',
-        body: 'Leaflets, hampers and meeting notices become routes with per-street progress for volunteer drivers.',
+        body: 'Leaflets, hampers and meeting notices become delivery outings with live progress for volunteer drivers.',
       },
     ],
     field: {
@@ -454,7 +454,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'house-modern',
         title: 'Deliveries',
-        body: 'Hampers, leaflets and program notices become routes with per-street progress for volunteer drivers.',
+        body: 'Hampers, leaflets and program notices become delivery outings with live progress for volunteer drivers.',
       },
     ],
     field: {
@@ -573,7 +573,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'house-modern',
         title: 'Deliveries',
-        body: 'Newsletters, invitations and care packages become routes with per-street progress for volunteer drivers.',
+        body: 'Newsletters, invitations and care packages become delivery outings with live progress for volunteer drivers.',
       },
     ],
     field: {

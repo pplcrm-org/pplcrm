@@ -7,8 +7,6 @@ import {
   PANEL_ROUTES,
   PLANNING_CARDS,
   REQUEST_STAGES,
-  ROUTE_LINE,
-  ROUTE_START,
   ROUTE_STOPS,
   STANDING_CARDS,
   VOLUNTEER_POINTS,
@@ -34,8 +32,6 @@ export class DeliveriesPage {
   protected readonly signupUrl = SIGNUP_URL;
 
   protected readonly stages = REQUEST_STAGES;
-  protected readonly routeLine = ROUTE_LINE;
-  protected readonly routeStart = ROUTE_START;
   protected readonly routeStops = ROUTE_STOPS;
   protected readonly panelRoutes = PANEL_ROUTES;
   protected readonly planningCards = PLANNING_CARDS;

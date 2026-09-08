@@ -7,6 +7,14 @@ description: Canvassing (§13) — the turfs / turf_households / turf_assignment
 
 Cut a smart-list universe into walkable **turfs**, hand them to volunteers via a
 **Canvass Companion** (web app, no account), and let every knock sync back live.
+Turfs carry a `mode` (`canvass` | `gotv` | `delivery`) and `travel` (`walk` | `drive`):
+GOTV turfs get the two-tap reminder door screen, delivery turfs ("outings") are cut from
+the approved request pool and use the drop-off screens (see `pplcrm-deliveries` for the
+pointer model), and drive turfs render the flat ordered stop list (`drive-list.ts`)
+instead of the street-grouped walk list. The delivery Requests tab renders inside
+/canvassing (module-gated), and per-mode scripts live on campaigns
+(`canvass_script` / `gotv_script` / `delivery_script`, selected server-side into the
+payload's `script`).
 Reuses the existing household geocoding (`households.lat/lng`, plus the
 `household_districts` rows the boundary matcher writes — `households.ward` and
 its two siblings no longer exist) and `lists.getCurrentMembers` — do **not**
@@ -136,8 +144,9 @@ door in. That door is the device session:
 - `CompanionAccessController.resolveSession(sessionToken)` — a sibling to
   `requireSession`, answering "who is this?" instead of "may they open this link?".
   It returns `{ tenant_id, volunteer_id, person_id, can_roam, join_campaign_id }`.
-  **Do not change `requireSession`** — `/t/:token` and `/r/:token` keep their
-  link-first check.
+  **Do not change `requireSession`** — `/t/:token` keeps its link-first check.
+  (The old `/r/:token` route links retired with the driving-route system, Phase 4;
+  the gate resolves kind 'route' to null and the page shows a moved notice.)
 - Two independent checks authorize a session-first request: the session says who they
   are (and that an admin approved them), and an **active `turf_assignments` row** says
   they belong on that turf (`assignmentForSession`). Roaming governs who may _create_
@@ -258,19 +267,19 @@ A canvasser carrying signs can hand one over, from two places, both writing the 
   save; a two-step version would need the request to exist before the second tap.
 
 The work is done by two public methods on `DeliveriesController` that run **inside the
-canvassing op's transaction** — `deliverHouseholdSign` and `undoHouseholdSignDelivery`. Do
-not reimplement either here. What they get right, and what breaks if you bypass them:
+canvassing op's transaction** — `deliverHouseholdSign` and `undoHouseholdSignDelivery`
+(direct request flips since the driving-route system retired in Phase 4; see
+`pplcrm-deliveries` for the turf-pointer model). Do not reimplement either here. What
+they get right, and what breaks if you bypass them:
 
-- **The delivery goes through the pending route stop** (`applyStopTransition`), so a house a
-  canvasser already served stops being a stop a driver is sent to, and the route advances
-  and auto-completes exactly as it does for the driver. Writing the request status directly
-  would leave a driver's route claiming that house is still to do.
-- **Undo restores the stop** via `undoStop`, reopening a route the delivery had completed.
-- **Creates the request when there is none** (the survey path), and returns false rather
-  than writing when the tenant-wide open-per-household index says another campaign holds
-  this household's request.
-- **No knock row is written.** Handing over a sign is not a report of a visit, and counting
-  it as one would inflate the turf's attempted-door numbers.
+- **Creates the request when there is none** (the survey path), and returns
+  'other_campaign' rather than writing when the per-purpose open-per-household index says
+  another campaign holds this household's request; 'already_delivered' means a retried op
+  or a second canvasser — nothing is written twice.
+- **On a CANVASS-mode turf, no knock row is written.** Handing over a sign is not a
+  report of a visit, and counting it as one would inflate the turf's attempted-door
+  numbers. (On a DELIVERY-mode turf the same `yard_sign` op branches server-side to
+  `deliverTurfCarriedRequests`, which DOES write the knock — there the tap IS the visit.)
 
 `CanvassStore.yardSign()` returns false when there is nothing to change (no request, or
 already in that state), so a retried offline op and a second canvasser at the same door are

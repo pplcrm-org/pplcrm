@@ -1,6 +1,6 @@
 ---
 name: pplcrm-companion-access
-description: The volunteer access layer gating both companion apps (canvass /t/:token, deliveries /r/:token) — verify-a-code + once-per-volunteer admin approval + hashed device sessions, the requireSession() guard, QR join codes (/j/:code), and approve-by-text (/a/:token). USE WHEN touching modules/companion-access, companion_volunteers / companion_sessions / companion_ops / campaign_join_codes / companion_approval_tokens, the /api/companion endpoints, the pc-companion-gate component, Twilio SMS, X-Companion-Session handling, or the /volunteer-access admin page. EXAMPLES 'why does the volunteer see a verify screen', 'add a volunteer who is not in the CRM', 'the approve-by-text link is dead', 'the code SMS never arrives'.
+description: The volunteer access layer gating the companion app (canvass/delivery turfs at /t/:token; the old deliveries /r/:token links are retired and resolve dead) — verify-a-code + once-per-volunteer admin approval + hashed device sessions, the requireSession() guard, QR join codes (/j/:code), and approve-by-text (/a/:token). USE WHEN touching modules/companion-access, companion_volunteers / companion_sessions / companion_ops / campaign_join_codes / companion_approval_tokens, the /api/companion endpoints, the pc-companion-gate component, Twilio SMS, X-Companion-Session handling, or the /volunteer-access admin page. EXAMPLES 'why does the volunteer see a verify screen', 'add a volunteer who is not in the CRM', 'the approve-by-text link is dead', 'the code SMS never arrives'.
 ---
 
 # Companion access layer (COMPANION-APPS-PLAN.md §2/§4)
@@ -8,8 +8,9 @@ description: The volunteer access layer gating both companion apps (canvass /t/:
 A companion capability link is not enough on its own. Two credentials ride every
 companion data request:
 
-- the **capability token** (in the URL: `/t/:token` turf, `/r/:token` route) says
-  **WHAT** may be touched — one turf or one route; it also resolves the tenant;
+- the **capability token** (in the URL: `/t/:token` turf; the old `/r/:token` route
+  kind retired with the driving-route system and resolves dead) says
+  **WHAT** may be touched — one turf; it also resolves the tenant;
 - the **device session** (`X-Companion-Session` header) says **WHO** is touching it —
   a volunteer who verified a one-time code sent to their email/SMS on file AND has
   been approved once by an admin.
@@ -159,7 +160,7 @@ volunteer switching turfs has no link to present — the session is the credenti
 an active `turf_assignments` row is the per-turf authorization on top of it. Same
 refusals as the guard (`UnauthorizedError` for a dead session, `ForbiddenError` for
 unapproved). **Add surfaces alongside `requireSession`, never by loosening it** — every
-existing `/t/:token` and `/r/:token` caller depends on its link-first check.
+existing `/t/:token` caller depends on its link-first check.
 
 `companion_volunteers.can_roam` (boolean, nullable) overrides the workspace
 `app.canvass_volunteer_roam` setting for one person; null inherits. See
@@ -233,7 +234,7 @@ no token and no text, which is correct: they couldn't approve anyway.
   optional (absent for `kind='session'`), and `verifyToken` is the internal swap that
   puts the join claim in the credential slot.
 - **Companion routes** (`app.routes.ts`): `/` (`HomePage` — type-your-join-code),
-  `/t/:token`, `/r/:token`, `/j/:code` (QR join), `/a/:token` (`ApprovePage` —
+  `/t/:token`, `/r/:token` (a "link has moved" notice since Phase 4), `/j/:code` (QR join), `/a/:token` (`ApprovePage` —
   approve-by-text, deliberately in the companion app so an SMS opens a thumb-sized page
   with no sign-in), and `/canvass` (session-first; no URL credential at all).
   `/canvass` exists because turf tokens are hashed: once someone joins by QR there is

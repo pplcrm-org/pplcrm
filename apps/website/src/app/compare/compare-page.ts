@@ -106,7 +106,7 @@ export class ComparePage {
     {
       job: 'The field: knocks, signs, deliveries',
       stack: 'Paper lists in the car, re-typed into the sheet at night, if it happens at all.',
-      crm: 'The canvassing companion is offline-first for volunteers, and every knock syncs back to the live report; delivery routes currently need a connection.',
+      crm: 'The volunteer companion is offline-first for both canvassing and deliveries — every knock and drop-off queues on the phone and syncs back to the live report when signal returns.',
     },
     {
       job: 'Knowing which district a door is in',

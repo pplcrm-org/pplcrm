@@ -12,8 +12,8 @@
       weeks later somebody asks why the Chens on Alder Street never got their sign.
     </p>
     <p class="mx-auto mt-3.5 max-w-[600px] text-[16px] leading-relaxed text-base-content/70">
-      pplCRM keeps one queue of requests, plans them into hour-sized driving routes, and hands each driver a page that
-      knows exactly one thing: the next stop.
+      pplCRM keeps one queue of requests and sends the approved ones out as delivery outings — batches of doors in
+      driving order, delivered from the same phone app your canvassers already use.
     </p>
   </div>
 </section>
@@ -27,8 +27,8 @@
         A request has one home and four states.
       </h2>
       <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
-        One request per household per campaign — asked for at the door, approved at a desk, delivered from a car. No
-        step happens in a spreadsheet.
+        One open request per household per kind — a sign request and a flyer request can coexist, two of the same
+        cannot. Asked for at the door, approved at a desk, delivered from a car. No step happens in a spreadsheet.
       </p>
     </div>
     <div class="mt-9 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -47,25 +47,26 @@
 <section class="border-b border-line bg-base-200 px-5 py-14 sm:px-8 sm:py-16">
   <div class="site-wrap">
     <div class="mx-auto max-w-[640px] text-center">
-      <div class="eyebrow">Route planning</div>
+      <div class="eyebrow">Cut into outings</div>
       <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
-        “Can you take one route tonight?”
+        “Can you take one outing tonight?”
       </h2>
       <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
-        The planner turns the approved pile into routes a volunteer can actually say yes to: about an hour each, from a
-        start address you choose, previewed in full before anything is saved.
+        One button turns the approved pile into outings a volunteer can actually say yes to: you pick what they carry
+        and how many doors, and the doors arrive in driving order. Cutting claims the requests, so nothing is handed out
+        twice.
       </p>
     </div>
 
     <div class="mx-auto mt-9 max-w-[880px]">
-      <pc-browser-frame url="app.pplcrm.com/deliveries/routes">
+      <pc-browser-frame url="app.pplcrm.com/canvassing">
         <div class="grid gap-4 p-5 sm:grid-cols-[1fr_210px]">
           <!-- Numbered stops joined by a dotted visit-order line. Dotted on purpose. -->
           <svg
             viewBox="0 0 320 220"
             class="block w-full rounded-[10px] border border-line"
             role="img"
-            aria-label="A route map: a start pin and six numbered stops joined by a dotted visit-order line."
+            aria-label="An outing map: six numbered doors, the first two filled in as delivered."
           >
             <rect width="320" height="220" fill="var(--color-base-200)" />
             <g stroke="var(--color-base-300)" stroke-width="1.5">
@@ -73,40 +74,7 @@
               <path d="M74 0 V220 M154 0 V220 M232 0 V220" />
             </g>
 
-            <polyline
-              [attr.points]="routeLine"
-              fill="none"
-              stroke="var(--color-primary)"
-              stroke-width="2"
-              stroke-dasharray="2 5"
-              stroke-linecap="round"
-            />
-
-            <!-- Start pin. -->
-            <g class="text-secondary">
-              <circle [attr.cx]="routeStart.x" [attr.cy]="routeStart.y" r="8" fill="currentColor" />
-              <text
-                [attr.x]="routeStart.x"
-                [attr.y]="routeStart.y + 3.5"
-                font-size="9"
-                font-weight="700"
-                text-anchor="middle"
-                fill="var(--color-base-100)"
-              >
-                S
-              </text>
-              <text
-                [attr.x]="routeStart.x - 14"
-                [attr.y]="routeStart.y + 22"
-                font-size="9"
-                font-weight="600"
-                fill="currentColor"
-              >
-                HQ
-              </text>
-            </g>
-
-            <!-- Stops: filled = delivered, hollow = still to come. -->
+            <!-- Doors, numbered in driving order: filled = delivered, hollow = still to come. -->
             <g class="text-primary">
               @for (stop of routeStops; track stop.n) {
               <circle
@@ -131,9 +99,11 @@
             </g>
           </svg>
 
-          <!-- The proposed plan: routes, and the leftovers with their reasons. -->
+          <!-- The cut: outings, and the leftovers with their reasons. -->
           <div class="flex flex-col gap-2.5">
-            <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/45">Proposed plan</div>
+            <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/45">
+              Cut into outings
+            </div>
             @for (route of panelRoutes; track route.name) {
             <div
               class="rounded-[10px] border border-line px-3 py-2.5"
@@ -146,9 +116,9 @@
             <div
               class="mt-1 rounded-[10px] bg-primary px-3 py-2.5 text-center text-[12px] font-semibold text-primary-content"
             >
-              Create 2 routes
+              Cut 2 outings
             </div>
-            <div class="text-center text-[10px] text-base-content/45">Nothing is saved until you do</div>
+            <div class="text-center text-[10px] text-base-content/45">A preview does the math before you commit</div>
           </div>
         </div>
       </pc-browser-frame>
@@ -172,7 +142,7 @@
 <section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
   <div class="site-wrap flex flex-wrap items-center justify-center gap-10 lg:gap-14">
     <div class="min-w-0 flex-1 basis-[360px]">
-      <div class="eyebrow">The driver’s page</div>
+      <div class="eyebrow">The volunteer’s outing</div>
       <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">One stop at a time, honestly.</h2>
       <div class="mt-6 flex flex-col">
         @for (item of volunteerPoints; track item.title; let last = $last) {
@@ -215,7 +185,7 @@
               >
               <span
                 class="rounded-[8px] border border-line bg-base-100 px-3 py-2 text-center text-[11px] font-semibold text-base-content/70"
-                >Skip for now</span
+                >Navigate</span
               >
             </div>
           </div>
@@ -233,7 +203,9 @@
             >
           </div>
           }
-          <div class="mt-auto text-center text-[10px] font-semibold text-primary">Open in Google Maps ↗</div>
+          <div class="mt-auto text-center text-[10px] font-semibold text-primary">
+            Open the next stops in Google Maps ↗
+          </div>
         </div>
       </div>
     </div>
@@ -249,8 +221,9 @@
         The field and the office stop disagreeing.
       </h2>
       <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
-        Because “routed” and “delivered” are read off the actual stops — never kept as separate checkboxes — the
-        canvassing crew, the drivers and the office are always looking at the same truth.
+        “Out for delivery” is one claim on the request itself — taken when an outing is cut, released when it retires —
+        so the canvassing crew, the delivery volunteers and the office are always looking at the same truth, and no
+        house is ever handed to two people.
       </p>
     </div>
     <div class="mx-auto mt-9 grid max-w-[880px] gap-3.5 sm:grid-cols-2">
@@ -303,11 +276,11 @@
 <!-- ========================= CLOSING CTA ========================= -->
 <section class="bg-navy px-5 py-14 text-center sm:px-8 sm:py-16">
   <h2 class="text-[clamp(1.5rem,4vw,1.75rem)] font-bold tracking-[-0.01em] text-white">
-    Plan a route over sample data tonight.
+    Send out an outing over sample data tonight.
   </h2>
   <p class="mx-auto mt-3.5 max-w-[560px] text-[15px] leading-relaxed text-white/75">
-    Your free workspace opens with sample households and sign requests already waiting. Approve a few, preview the
-    routes, and see the driver’s page on your own phone. No card, no time limit.
+    Your free workspace opens with sample households and sign requests already waiting. Approve a few, cut them into
+    outings, and open one on your own phone. No card, no time limit.
   </p>
   <div class="mt-6">
     <a [href]="signupUrl" class="btn btn-primary rounded-field px-6 text-[14.5px] font-semibold">

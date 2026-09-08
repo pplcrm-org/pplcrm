@@ -11,7 +11,7 @@ export const EULA_DOC: LegalDoc = {
   title: 'End user license agreement',
   intro:
     'The agreement between you and pplCRM when you use the service. Plain language where the law allows it, and no surprises hiding in the numbered clauses.',
-  updated: 'August 1, 2026',
+  updated: 'September 8, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -165,7 +165,7 @@ export const EULA_DOC: LegalDoc = {
     },
     {
       kind: 'p',
-      text: 'Companion links give volunteers access to exactly the turf or route you assign, without an account. Volunteers verify with a one-time code and each must be approved once by an admin. By default an approved canvasser can also start on another turf within a campaign they already work in; you can restrict that to assigned turfs only, for the workspace or for one volunteer. You are responsible for who you approve, and you can revoke a volunteer or regenerate a link at any time. Companion sessions and links expire automatically unless you configure otherwise.',
+      text: 'Companion links give volunteers access to exactly the turf or delivery outing you assign, without an account. Volunteers verify with a one-time code and each must be approved once by an admin. By default an approved canvasser can also start on another turf within a campaign they already work in; you can restrict that to assigned turfs only, for the workspace or for one volunteer. You are responsible for who you approve, and you can revoke a volunteer or regenerate a link at any time. Companion sessions and links expire automatically unless you configure otherwise.',
     },
     {
       kind: 'h2',

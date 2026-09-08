@@ -146,11 +146,11 @@ export class FaqPage {
       items: [
         {
           q: 'What do volunteers see?',
-          a: 'Only what you hand them: the turf they’re walking or the route they’re driving, on iOS, Android or the web — never the contact list. By default an approved volunteer can also pick another turf inside their own campaign, never another campaign; admins can turn that off for the whole workspace or for one person. Not the whole list.',
+          a: 'Only what you hand them: the turf they’re walking or the outing they’re driving, on iOS, Android or the web — never the contact list. By default an approved volunteer can also pick another turf inside their own campaign, never another campaign; admins can turn that off for the whole workspace or for one person. Not the whole list.',
         },
         {
           q: 'Do the apps work offline?',
-          a: 'Door lists are. The canvassing companion is offline-first — knocks queue on the phone and sync back to the field report when you’re in signal again. Delivery routes currently need a connection.',
+          a: 'They are. The volunteer companion is offline-first for canvassing and deliveries alike — knocks and drop-offs queue on the phone and sync back to the field report when you’re in signal again.',
         },
         {
           q: 'Can volunteers work on paper?',

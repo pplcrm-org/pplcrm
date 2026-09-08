@@ -13,7 +13,7 @@ export const SECURITY_DOC: LegalDoc = {
   title: 'Security',
   intro:
     'Boring, deliberate security: what we actually do to protect your list, described specifically enough to be checked. No badges we have not earned.',
-  updated: 'August 22, 2026',
+  updated: 'September 8, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -73,7 +73,7 @@ export const SECURITY_DOC: LegalDoc = {
     },
     {
       kind: 'p',
-      text: 'Field tools are where lists usually leak, so companion access is least-privilege by construction. A volunteer link exposes exactly one turf or route, never the list, and a volunteer never sees an email, a phone number or a donation history. Volunteers verify with a one-time code sent to the contact your organization has on file (codes expire in 10 minutes, five attempts maximum) and must be approved once by an admin before first use. By default an approved canvasser can also pick another turf inside the campaign they are already working in — never another campaign, never another organization — and you can turn that off for the whole workspace or for one person. Device sessions are stored hashed and expire after 30 days; links expire too, and both are revocable at any time. A lost phone is an inconvenience, not a breach of your list.',
+      text: 'Field tools are where lists usually leak, so companion access is least-privilege by construction. A volunteer link exposes exactly one turf or delivery outing, never the list, and a volunteer never sees an email, a phone number or a donation history. Volunteers verify with a one-time code sent to the contact your organization has on file (codes expire in 10 minutes, five attempts maximum) and must be approved once by an admin before first use. By default an approved canvasser can also pick another turf inside the campaign they are already working in — never another campaign, never another organization — and you can turn that off for the whole workspace or for one person. Device sessions are stored hashed and expire after 30 days; links expire too, and both are revocable at any time. A lost phone is an inconvenience, not a breach of your list.',
     },
     {
       kind: 'p',
