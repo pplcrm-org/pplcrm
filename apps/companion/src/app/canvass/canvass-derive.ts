@@ -610,6 +610,7 @@ export function opPersonId(op: CompanionOpType): string | null {
     case 'clear_outcome':
     case 'person_create':
     case 'yard_sign':
+    case 'delivery_result':
       return null;
     default: {
       const _exhaustive: never = op;
@@ -689,6 +690,15 @@ export function applyLocalOps(
             status: op.payload.delivered ? 'delivered' : 'requested',
           };
         }
+        // On a delivery outing the same tap is the door's whole state. Guarded on the
+        // field's presence — only delivery payloads carry it, and inventing one on a
+        // canvass door would paint delivery chrome where none belongs.
+        if (h.delivery_status !== undefined) {
+          h.delivery_status = op.payload.delivered ? 'delivered' : 'pending';
+        }
+        break;
+      case 'delivery_result':
+        if (h.delivery_status !== undefined) h.delivery_status = 'undeliverable';
         break;
       case 'door_outcome':
         h.door_outcome = op.payload.outcome;

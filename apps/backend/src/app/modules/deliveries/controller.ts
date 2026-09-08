@@ -196,6 +196,123 @@ export class DeliveriesController {
     return this.requestsRepo.releaseTurfPointers(input, trx);
   }
 
+  /**
+   * Per-door delivery state for one outing's payload: what this turf carries at each
+   * household. 'pending' wins over 'undeliverable' (a clean open request means the door
+   * is still worth a stop), and 'delivered' only when nothing is open.
+   */
+  public async turfDeliveryStates(
+    tenant_id: string,
+    turf_id: string,
+  ): Promise<Map<string, 'pending' | 'delivered' | 'undeliverable'>> {
+    const rows = await this.requestsRepo.db
+      .selectFrom('delivery_requests')
+      .select(['household_id', 'status', 'skip_reason'])
+      .where('tenant_id', '=', tenant_id)
+      .where('turf_id', '=', turf_id)
+      .execute();
+    const out = new Map<string, 'pending' | 'delivered' | 'undeliverable'>();
+    for (const r of rows) {
+      const hid = String(r.household_id);
+      const open = r.status === 'new' || r.status === 'approved';
+      const state: 'pending' | 'delivered' | 'undeliverable' = open
+        ? r.skip_reason != null
+          ? 'undeliverable'
+          : 'pending'
+        : 'delivered';
+      const prior = out.get(hid);
+      if (prior === 'pending') continue;
+      if (state === 'pending' || prior == null || prior === 'delivered') out.set(hid, state);
+    }
+    return out;
+  }
+
+  /**
+   * The delivery outing's door tap: flip every open request THIS turf carries at the
+   * household to delivered, in the op's transaction. Resolution by the pointer, not by
+   * purpose — a 'both' outing leaves the sign and the flyer in one visit.
+   *
+   * 'already_delivered' (this outing's requests are all delivered) is a retried op or a
+   * second volunteer at a done door — the world matches what was asked. 'none' means the
+   * turf carries nothing here any more (the office declined it mid-shift) and the caller
+   * owes the volunteer a rejection, not a success toast.
+   */
+  public async deliverTurfCarriedRequests(
+    trx: Transaction<Models>,
+    auth: IAuthKeyPayload,
+    input: { turf_id: string; household_id: string; via: string },
+  ): Promise<'delivered' | 'already_delivered' | 'none'> {
+    const rows = await trx
+      .selectFrom('delivery_requests')
+      .select(['id', 'purpose', 'status'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('turf_id', '=', input.turf_id)
+      .where('household_id', '=', input.household_id)
+      .execute();
+    const open = rows.filter((r) => r.status === 'new' || r.status === 'approved');
+    if (open.length === 0) return rows.some((r) => r.status === 'delivered') ? 'already_delivered' : 'none';
+
+    const ids = open.map((r) => String(r.id));
+    await trx
+      .updateTable('delivery_requests')
+      .set({ status: 'delivered', skip_reason: null, updatedby_id: auth.user_id, updated_at: new Date() })
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('id', 'in', ids)
+      .execute();
+    // The sign automation is about signs; a flyer drop must not fire it.
+    const signIds = open.filter((r) => r.purpose === 'yard_sign').map((r) => String(r.id));
+    await this.triggerSignDeliveredWorkflows(trx, auth.tenant_id, signIds);
+    await this.logRequestStanding(trx, auth, ids, 'delivered', input.via);
+    return 'delivered';
+  }
+
+  /** Undo of the tap above: this outing's delivered requests at the door go back to owed. */
+  public async undoTurfCarriedDelivery(
+    trx: Transaction<Models>,
+    auth: IAuthKeyPayload,
+    input: { turf_id: string; household_id: string; via: string },
+  ): Promise<boolean> {
+    const rows = await trx
+      .selectFrom('delivery_requests')
+      .select(['id'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('turf_id', '=', input.turf_id)
+      .where('household_id', '=', input.household_id)
+      .where('status', '=', 'delivered')
+      .execute();
+    if (rows.length === 0) return false;
+    const ids = rows.map((r) => String(r.id));
+    await trx
+      .updateTable('delivery_requests')
+      .set({ status: 'approved', skip_reason: null, updatedby_id: auth.user_id, updated_at: new Date() })
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('id', 'in', ids)
+      .execute();
+    await this.logRequestStanding(trx, auth, ids, 'undelivered', input.via);
+    return true;
+  }
+
+  /**
+   * "Couldn't deliver": the reason lands on this outing's open requests at the door.
+   * Status stays approved and the pointer stays — the door is still this outing's job
+   * and returns to the pool only when the outing retires.
+   */
+  public async markTurfCarriedUndeliverable(
+    trx: Transaction<Models>,
+    auth: IAuthKeyPayload,
+    input: { turf_id: string; household_id: string; reason: string },
+  ): Promise<boolean> {
+    const result = await trx
+      .updateTable('delivery_requests')
+      .set({ skip_reason: input.reason, updatedby_id: auth.user_id, updated_at: new Date() })
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('turf_id', '=', input.turf_id)
+      .where('household_id', '=', input.household_id)
+      .where('status', 'in', ['new', 'approved'])
+      .executeTakeFirst();
+    return Number(result?.numUpdatedRows ?? 0) > 0;
+  }
+
   /** Yard-sign standing for one household in one campaign context (household/person pages). */
   public async getSignStatus(auth: IAuthKeyPayload, input: GetSignStatusType) {
     const request = await this.requestsRepo.getSignStatus(auth.tenant_id, input.household_id, input.campaign_id);

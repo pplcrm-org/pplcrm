@@ -1821,7 +1821,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     // Prior ID and open sign requests are what turn a list of addresses into a walk list:
     // they say which door is worth the next ten minutes. Both are read AFTER the residents
     // because both are keyed off them.
-    const [priorFacts, yardSigns, lastKnocks] = await Promise.all([
+    const [priorFacts, yardSigns, lastKnocks, deliveryStates] = await Promise.all([
       this.priorFactsByPerson(tenant_id, campaignId, personIds),
       this.yardSignsByHousehold(tenant_id, campaignId, householdIds),
       // "Somebody was already here" is the one thing a walk list cannot tell a volunteer
@@ -1834,6 +1834,10 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
             household_ids: householdIds,
             since: new Date(Date.now() - RECENT_KNOCK_WINDOW_DAYS * MS_PER_DAY),
           }),
+      // What THIS outing carries at each door — the delivery list's row state.
+      turf.mode === 'delivery'
+        ? this.deliveries.turfDeliveryStates(tenant_id, turf_id)
+        : Promise.resolve(new Map<string, 'pending' | 'delivered' | 'undeliverable'>()),
     ]);
 
     // Index the latest knock per (household, person).
@@ -1863,6 +1867,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         lng: d.lng,
         dnc: residents.length > 0 && residents.every((p) => p.dnc),
         yard_sign: yardSigns.get(d.household_id) ?? null,
+        ...(turf.mode === 'delivery' ? { delivery_status: deliveryStates.get(d.household_id) ?? null } : {}),
         door_outcome: doorOutcome,
         hh_survey: hhSurvey,
         last_knock: lastKnock
@@ -2222,6 +2227,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
     const doorIds = new Set(await this.turfHouseholds.getHouseholdIds({ tenant_id, turf_id }));
     const canvasserName = await this.personFirstLast(tenant_id, String(assignment.volunteer_person_id));
+    // The turf's mode decides how the door taps apply (a delivery outing's 'yard_sign'
+    // op resolves by the turf pointer and writes a knock). Resolved once per batch.
+    const turfMode = (await this.turfsRepo().getTurfCore({ tenant_id, id: turf_id }))?.mode ?? 'canvass';
 
     // A knock batch is shift activity: it opens the shift when there is none (a volunteer
     // with location off still gets a live-board row). Ensured BEFORE the ops are applied
@@ -2264,6 +2272,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
             op,
             tenant_id,
             turf_id,
+            turf_mode: turfMode,
             actor: assignment.created_by,
             canvasser_name: canvasserName,
           });
@@ -2344,11 +2353,12 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       op: CompanionOpType;
       tenant_id: string;
       turf_id: string;
+      turf_mode: TurfMode;
       actor: string;
       canvasser_name: string;
     },
   ): Promise<CompanionOpAck> {
-    const { op, tenant_id, turf_id, actor, canvasser_name } = input;
+    const { op, tenant_id, turf_id, turf_mode, actor, canvasser_name } = input;
     const householdId = String(op.payload.household_id);
     const knockedAt = this.clampRecordedAt(op.recorded_at);
     const via = `via Canvass Companion (${canvasser_name})`;
@@ -2462,8 +2472,44 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         return { op_id: op.op_id, status: 'applied' };
       }
       case 'yard_sign': {
-        // No knock row: handing over a sign is not a report of a visit, and counting it as
-        // one would inflate the turf's door numbers with something that isn't a door tried.
+        // On a DELIVERY outing the tap is the visit itself: resolve what this turf
+        // carries at the door by the pointer (purpose-blind — a 'both' outing hands
+        // over the sign and the flyer in one stop) and write a knock row, because the
+        // turf's progress derives from knocks and would read 0% forever without one.
+        if (turf_mode === 'delivery') {
+          const auth = this.companionAuth(tenant_id, actor);
+          if (op.payload.delivered) {
+            const result = await this.deliveries.deliverTurfCarriedRequests(trx, auth, {
+              turf_id,
+              household_id: householdId,
+              via,
+            });
+            if (result === 'none') {
+              throw new BadRequestError(
+                'This door is no longer on your outing — the office may have cancelled its request. Nothing was recorded; check with your organizer.',
+              );
+            }
+            if (result === 'delivered') {
+              await insertKnock({ person_id: null, outcome: 'delivered' });
+              await logActivity('household', householdId, { outcome: 'delivered' });
+            }
+          } else {
+            const changed = await this.deliveries.undoTurfCarriedDelivery(trx, auth, {
+              turf_id,
+              household_id: householdId,
+              via,
+            });
+            if (changed) {
+              // The append-only un-count: the delivered knock stays, the cleared marker
+              // says the outcome was undone — same convention as clear_outcome.
+              await insertKnock({ person_id: null, outcome: 'cleared' });
+              await logActivity('household', householdId, { outcome: 'cleared', yard_sign_delivered: false });
+            }
+          }
+          return { op_id: op.op_id, status: 'applied' };
+        }
+        // CANVASS/GOTV: no knock row — handing over a sign is not a report of a visit,
+        // and counting it as one would inflate the turf's door numbers.
         const campaignId = await this.resolveKnockCampaignId(tenant_id, turf_id);
         if (!campaignId) throw new BadRequestError('This turf has no campaign to record a sign against.');
         const auth = this.companionAuth(tenant_id, actor);
@@ -2495,6 +2541,25 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         // Nothing changed means it was already in that state — a retried op, or a second
         // canvasser at the same door. Still 'applied': the world matches what was asked.
         if (changed) await logActivity('household', householdId, { yard_sign_delivered: op.payload.delivered });
+        return { op_id: op.op_id, status: 'applied' };
+      }
+      case 'delivery_result': {
+        // "Couldn't deliver" — only a delivery outing's door has this button, and only
+        // there does the tap mean anything: elsewhere there is no carried request to
+        // annotate, and accepting it would record a visit vocabulary the mode never shows.
+        if (turf_mode !== 'delivery') {
+          throw new BadRequestError('This result belongs to a delivery outing.');
+        }
+        const auth = this.companionAuth(tenant_id, actor);
+        await this.deliveries.markTurfCarriedUndeliverable(trx, auth, {
+          turf_id,
+          household_id: householdId,
+          reason: op.payload.reason,
+        });
+        // The knock is written even when the request vanished mid-shift (declined at the
+        // office): the volunteer DID try this door, and the attempt is true either way.
+        await insertKnock({ person_id: null, outcome: 'undeliverable', notes: op.payload.reason });
+        await logActivity('household', householdId, { outcome: 'undeliverable', reason: op.payload.reason });
         return { op_id: op.op_id, status: 'applied' };
       }
       case 'person_create': {

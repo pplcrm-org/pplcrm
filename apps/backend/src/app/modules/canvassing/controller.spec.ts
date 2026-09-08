@@ -2429,6 +2429,145 @@ describe('CanvassingController', () => {
       expect(detail.doors.some((d) => d.household_id === target.household_id)).toBe(false);
     });
 
+    it("the delivery door taps: deliver writes the knock and flips the carried request; couldn't-deliver and undo follow", async () => {
+      const pool = s.householdIds.slice(0, 2);
+      await seedApproved(pool);
+      await controller.cutTurfs(auth, { doors_per_turf: 20, mode: 'delivery' });
+      const turfs = await controller.getTurfs(auth);
+      const turf = turfs.find((t) => t.door_count > 0);
+      if (!turf) throw new Error('expected a delivery turf with doors');
+
+      const { token } = await controller.assignTurf(auth, {
+        turf_id: turf.id,
+        team_id: null,
+        volunteer_person_id: s.volunteerPersonId,
+      });
+      const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+      const companion = await controller.getCompanionTurf(token, session);
+
+      // The payload says what the outing carries at each door.
+      expect(companion.mode).toBe('delivery');
+      for (const h of companion.households) expect(h.delivery_status).toBe('pending');
+      const door = companion.households[0];
+      if (!door) throw new Error('expected a door');
+
+      // Deliver: the carried request flips and ONE knock row records the visit.
+      const deliver = await controller.postCompanionResults(token, session, [
+        { op_id: 'dlv-1', recorded_at: null, type: 'yard_sign', payload: { household_id: door.id, delivered: true } },
+      ]);
+      expect(deliver.acks[0]?.status).toBe('applied');
+      const requestNow = await db
+        .selectFrom('delivery_requests')
+        .select(['status', 'turf_id'])
+        .where('tenant_id', '=', s.tenantId)
+        .where('household_id', '=', door.id)
+        .executeTakeFirstOrThrow();
+      expect(String(requestNow.status)).toBe('delivered');
+      expect(requestNow.turf_id).not.toBeNull(); // provenance kept
+      const knocks = await db
+        .selectFrom('turf_knocks')
+        .select(['outcome'])
+        .where('tenant_id', '=', s.tenantId)
+        .where('household_id', '=', door.id)
+        .execute();
+      expect(knocks.map((k) => String(k.outcome))).toEqual(['delivered']);
+
+      // A retried op is a duplicate, not a second knock.
+      const retry = await controller.postCompanionResults(token, session, [
+        { op_id: 'dlv-1', recorded_at: null, type: 'yard_sign', payload: { household_id: door.id, delivered: true } },
+      ]);
+      expect(retry.acks[0]?.status).toBe('duplicate');
+
+      // Undo: the request is owed again and the append-only cleared marker lands.
+      const undo = await controller.postCompanionResults(token, session, [
+        { op_id: 'dlv-2', recorded_at: null, type: 'yard_sign', payload: { household_id: door.id, delivered: false } },
+      ]);
+      expect(undo.acks[0]?.status).toBe('applied');
+      const afterUndo = await db
+        .selectFrom('delivery_requests')
+        .select(['status'])
+        .where('tenant_id', '=', s.tenantId)
+        .where('household_id', '=', door.id)
+        .executeTakeFirstOrThrow();
+      expect(String(afterUndo.status)).toBe('approved');
+
+      // Couldn't deliver: the reason lands on the request and the attempt is a knock.
+      const skip = await controller.postCompanionResults(token, session, [
+        {
+          op_id: 'dlv-3',
+          recorded_at: null,
+          type: 'delivery_result',
+          payload: { household_id: door.id, reason: 'Gate locked' },
+        },
+      ]);
+      expect(skip.acks[0]?.status).toBe('applied');
+      const afterSkip = await db
+        .selectFrom('delivery_requests')
+        .select(['status', 'skip_reason'])
+        .where('tenant_id', '=', s.tenantId)
+        .where('household_id', '=', door.id)
+        .executeTakeFirstOrThrow();
+      expect(String(afterSkip.status)).toBe('approved');
+      expect(afterSkip.skip_reason).toBe('Gate locked');
+      const outcomes = (
+        await db
+          .selectFrom('turf_knocks')
+          .select(['outcome'])
+          .where('tenant_id', '=', s.tenantId)
+          .where('household_id', '=', door.id)
+          .orderBy('id')
+          .execute()
+      ).map((k) => String(k.outcome));
+      expect(outcomes).toEqual(['delivered', 'cleared', 'undeliverable']);
+
+      // The refreshed payload derives the door's state from the requests.
+      const refreshed = await controller.getCompanionTurf(token, session);
+      expect(refreshed.households.find((h) => h.id === door.id)?.delivery_status).toBe('undeliverable');
+    });
+
+    it('a deliver tap on a door the office pulled back is rejected, not silently absorbed', async () => {
+      const pool = s.householdIds.slice(0, 1);
+      await seedApproved(pool);
+      await controller.cutTurfs(auth, { doors_per_turf: 20, mode: 'delivery' });
+      const turfs = await controller.getTurfs(auth);
+      const turf = turfs.find((t) => t.door_count > 0);
+      if (!turf) throw new Error('expected a delivery turf with doors');
+      const { token } = await controller.assignTurf(auth, {
+        turf_id: turf.id,
+        team_id: null,
+        volunteer_person_id: s.volunteerPersonId,
+      });
+      const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+      const companion = await controller.getCompanionTurf(token, session);
+      const door = companion.households[0];
+      if (!door) throw new Error('expected a door');
+
+      // The office declines the request while the volunteer is out. The pointer clears
+      // and the door leaves the turf; a deliver op queued before that must be rejected.
+      const requestId = String(
+        (
+          await db
+            .selectFrom('delivery_requests')
+            .select('id')
+            .where('tenant_id', '=', s.tenantId)
+            .where('household_id', '=', door.id)
+            .executeTakeFirstOrThrow()
+        ).id,
+      );
+      const deliveries = new DeliveriesController();
+      await deliveries.setRequestStatus(auth, { ids: [requestId], status: 'declined' });
+
+      const res = await controller.postCompanionResults(token, session, [
+        {
+          op_id: 'dlv-gone',
+          recorded_at: null,
+          type: 'yard_sign',
+          payload: { household_id: door.id, delivered: true },
+        },
+      ]);
+      expect(res.acks[0]?.status).toBe('rejected');
+    });
+
     it('retiring a delivery turf hands its undelivered requests back to the pool; delivered keep provenance', async () => {
       const pool = s.householdIds.slice(0, 3);
       await seedApproved(pool);

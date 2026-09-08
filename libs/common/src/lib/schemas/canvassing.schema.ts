@@ -351,6 +351,17 @@ export const CompanionYardSignObj = z.object({
   delivered: z.boolean(),
 });
 
+/**
+ * "Couldn't deliver" on a delivery outing (turf mode 'delivery'): the volunteer reached
+ * the door but could not leave the sign/flyer. Writes an 'undeliverable' knock carrying
+ * the reason, and the reason onto the carried request's skip_reason. The request stays
+ * approved and stays with the outing — it returns to the pool when the outing retires.
+ */
+export const CompanionDeliveryResultObj = z.object({
+  household_id: idSchema,
+  reason: z.string().trim().min(1).max(500),
+});
+
 const companionOpBase = {
   /** Client-generated UUID — the idempotency key (companion_ops ledger). */
   op_id: z.string().min(8).max(100),
@@ -365,6 +376,7 @@ export const CompanionOpObj = z.discriminatedUnion('type', [
   z.object({ ...companionOpBase, type: z.literal('clear_outcome'), payload: CompanionClearOutcomeObj }),
   z.object({ ...companionOpBase, type: z.literal('person_create'), payload: CompanionPersonCreateObj }),
   z.object({ ...companionOpBase, type: z.literal('yard_sign'), payload: CompanionYardSignObj }),
+  z.object({ ...companionOpBase, type: z.literal('delivery_result'), payload: CompanionDeliveryResultObj }),
 ]);
 
 /**
@@ -548,6 +560,13 @@ export interface CompanionHousehold {
    * showing a request that looks outstanding.
    */
   yard_sign: CompanionYardSign | null;
+  /**
+   * Delivery outings only: the state of what THIS outing carries for the door —
+   * 'pending' (still to leave), 'delivered' (all left), 'undeliverable' (tried, could
+   * not leave it; the reason lives on the request). Absent on every other mode's
+   * payload, and absent from payloads built before delivery turfs existed.
+   */
+  delivery_status?: 'pending' | 'delivered' | 'undeliverable' | null;
   door_outcome: CompanionDoorOutcome | null;
   /** The anonymous household-level survey, when one was recorded. */
   hh_survey: CompanionSurveyPrefill | null;
