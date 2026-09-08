@@ -94,7 +94,12 @@ type ListFilter = 'all' | 'remaining' | 'visited';
             [class.ring-2]="h.id === nextStopId()"
             [class.ring-primary]="h.id === nextStopId()"
           >
-            <button type="button" class="flex w-full items-center gap-3 p-3 text-left" (click)="open(h)">
+            <button
+              type="button"
+              class="flex w-full items-center gap-3 p-3 text-left"
+              [attr.aria-expanded]="expandable(h) ? panelOpen(h) : null"
+              (click)="rowTap(h)"
+            >
               <span
                 class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-semibold"
                 [class.bg-primary]="h.id === nextStopId()"
@@ -116,28 +121,53 @@ type ListFilter = 'all' | 'remaining' | 'visited';
                   <span class="block truncate text-xs text-base-content/50">{{ note }}</span>
                 }
               </span>
-              <span [class]="chipClass(h)">{{ chipLabel(h) }}</span>
+              <span class="flex shrink-0 items-center gap-1.5">
+                <span [class]="chipClass(h)">{{ chipLabel(h) }}</span>
+                @if (expandable(h)) {
+                  <pc-icon
+                    [name]="panelOpen(h) ? 'chevron-up' : 'chevron-down'"
+                    [size]="4"
+                    class="text-base-content/40"
+                  />
+                }
+              </span>
             </button>
-            @if (showQuickActions(h)) {
-              <div class="flex items-center gap-2 border-t border-base-200 p-2">
-                @for (action of quickActions(); track action.id) {
+            <!-- Delivery stops show their buttons always (the job is the household's);
+                 canvass and GOTV stops fold them until the row is tapped. -->
+            @if (panelOpen(h)) {
+              <div class="flex flex-col gap-2 border-t border-base-200 p-2">
+                <div
+                  class="gap-2"
+                  [class.flex]="store.mode() !== 'canvass'"
+                  [class.items-center]="store.mode() !== 'canvass'"
+                  [class.grid]="store.mode() === 'canvass'"
+                  [class.grid-cols-2]="store.mode() === 'canvass'"
+                >
+                  @for (action of quickActions(); track action.id) {
+                    <button
+                      type="button"
+                      class="btn btn-outline btn-secondary btn-xs min-h-9 flex-1"
+                      (click)="quickAct(h, action.id)"
+                    >
+                      {{ action.label }}
+                    </button>
+                  }
                   <button
                     type="button"
-                    class="btn btn-outline btn-secondary btn-xs min-h-9 flex-1"
-                    (click)="quickAct(h, action.id)"
+                    class="btn btn-outline btn-secondary btn-xs min-h-9"
+                    [attr.aria-label]="'Navigate to ' + h.address"
+                    title="Navigate to this stop"
+                    (click)="navigate(h)"
                   >
-                    {{ action.label }}
+                    <pc-icon name="map-pin" [size]="4" />
+                  </button>
+                </div>
+                @if (expandable(h)) {
+                  <button type="button" class="btn btn-ghost btn-xs min-h-9 w-full" (click)="open(h)">
+                    Open this door
+                    <pc-icon name="chevron-right" [size]="4" />
                   </button>
                 }
-                <button
-                  type="button"
-                  class="btn btn-outline btn-secondary btn-xs min-h-9"
-                  [attr.aria-label]="'Navigate to ' + h.address"
-                  title="Navigate to this stop"
-                  (click)="navigate(h)"
-                >
-                  <pc-icon name="map-pin" [size]="4" />
-                </button>
               </div>
             }
           </div>
@@ -238,7 +268,30 @@ export class DriveList {
     return showQuickActionsFor(this.store.mode(), h);
   }
 
+  /** The one stop whose folded quick actions are showing; null = all folded. */
+  protected readonly expandedId = signal<string | null>(null);
+
+  /** Delivery stops never fold (household-level job); canvass/GOTV stops fold until tapped. */
+  protected expandable(h: CompanionHousehold): boolean {
+    return this.store.mode() !== 'delivery' && this.showQuickActions(h);
+  }
+
+  protected panelOpen(h: CompanionHousehold): boolean {
+    if (!this.showQuickActions(h)) return false;
+    if (this.store.mode() === 'delivery') return true;
+    return this.expandedId() === h.id;
+  }
+
+  protected rowTap(h: CompanionHousehold): void {
+    if (!this.expandable(h)) {
+      this.open(h);
+      return;
+    }
+    this.expandedId.set(this.expandedId() === h.id ? null : h.id);
+  }
+
   protected quickAct(h: CompanionHousehold, action: QuickActionId): void {
+    this.expandedId.set(null);
     performQuickAction(this.store, this.alerts, h, action);
   }
 

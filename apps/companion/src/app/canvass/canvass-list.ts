@@ -179,7 +179,12 @@ type ListFilter = 'all' | 'remaining' | 'visited';
               [class.ring-2]="entry.key === store.nextEntryKey()"
               [class.ring-primary]="entry.key === store.nextEntryKey()"
             >
-              <button type="button" class="flex w-full items-center gap-3 p-3 text-left" (click)="open(entry)">
+              <button
+                type="button"
+                class="flex w-full items-center gap-3 p-3 text-left"
+                [attr.aria-expanded]="expandable(entry.household) ? panelOpen(entry) : null"
+                (click)="rowTap(entry)"
+              >
                 <span
                   class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-semibold"
                   [class.bg-primary]="entry.key === store.nextEntryKey()"
@@ -232,40 +237,59 @@ type ListFilter = 'all' | 'remaining' | 'visited';
                     <pc-icon [name]="s.icon" [size]="4" [class]="s.tone" [title]="s.label" />
                   }
                   <span [class]="chipClass(entry.household)">{{ chipLabel(entry.household) }}</span>
+                  @if (expandable(entry.household)) {
+                    <pc-icon
+                      [name]="panelOpen(entry) ? 'chevron-up' : 'chevron-down'"
+                      [size]="4"
+                      class="text-base-content/40"
+                    />
+                  }
                 </span>
               </button>
-              <!-- The common outcomes, right on the row (operator rule 2026-09-05): most
+              <!-- The common outcomes, one tap from the row (operator rule 2026-09-05): most
                    doors end in one tap, and the detail screen is for the uncommon work.
+                   Delivery rows show them always — the job is the household's, not a
+                   person's. Canvass and GOTV rows keep them folded until the row is tapped
+                   (operator 2026-09-08: four buttons on every row took too much space).
                    Gone once the door is attempted — the job the buttons do is done. -->
-              @if (showQuickActions(entry.household)) {
-                <!-- GOTV and delivery: two or three buttons + Navigate in one row.
-                     Persuasion: four labels, which crush at phone width in one row,
-                     so they sit as a 2×2 grid. -->
-                <div
-                  class="gap-2 border-t border-base-200 p-2"
-                  [class.flex]="store.mode() !== 'canvass'"
-                  [class.items-center]="store.mode() !== 'canvass'"
-                  [class.grid]="store.mode() === 'canvass'"
-                  [class.grid-cols-2]="store.mode() === 'canvass'"
-                >
-                  @for (action of quickActions(); track action.id) {
-                    <button
-                      type="button"
-                      class="btn btn-outline btn-secondary btn-xs min-h-9 flex-1"
-                      (click)="quickAct(entry.household, action.id)"
-                    >
-                      {{ action.label }}
-                    </button>
-                  }
-                  @if (store.mode() !== 'canvass') {
-                    <button
-                      type="button"
-                      class="btn btn-outline btn-secondary btn-xs min-h-9"
-                      [attr.aria-label]="'Navigate to ' + entry.household.address"
-                      title="Navigate to this door"
-                      (click)="navigate(entry.household)"
-                    >
-                      <pc-icon name="map-pin" [size]="4" />
+              @if (panelOpen(entry)) {
+                <div class="flex flex-col gap-2 border-t border-base-200 p-2">
+                  <!-- GOTV and delivery: two or three buttons + Navigate in one row.
+                       Persuasion: four labels, which crush at phone width in one row,
+                       so they sit as a 2×2 grid. -->
+                  <div
+                    class="gap-2"
+                    [class.flex]="store.mode() !== 'canvass'"
+                    [class.items-center]="store.mode() !== 'canvass'"
+                    [class.grid]="store.mode() === 'canvass'"
+                    [class.grid-cols-2]="store.mode() === 'canvass'"
+                  >
+                    @for (action of quickActions(); track action.id) {
+                      <button
+                        type="button"
+                        class="btn btn-outline btn-secondary btn-xs min-h-9 flex-1"
+                        (click)="quickAct(entry.household, action.id)"
+                      >
+                        {{ action.label }}
+                      </button>
+                    }
+                    @if (store.mode() !== 'canvass') {
+                      <button
+                        type="button"
+                        class="btn btn-outline btn-secondary btn-xs min-h-9"
+                        [attr.aria-label]="'Navigate to ' + entry.household.address"
+                        title="Navigate to this door"
+                        (click)="navigate(entry.household)"
+                      >
+                        <pc-icon name="map-pin" [size]="4" />
+                      </button>
+                    }
+                  </div>
+                  <!-- Tapping the row folds/unfolds, so the door screen needs its own way in. -->
+                  @if (expandable(entry.household)) {
+                    <button type="button" class="btn btn-ghost btn-xs min-h-9 w-full" (click)="open(entry)">
+                      Open this door
+                      <pc-icon name="chevron-right" [size]="4" />
                     </button>
                   }
                 </div>
@@ -346,7 +370,35 @@ export class CanvassList {
     return showQuickActionsFor(this.store.mode(), h);
   }
 
+  /** The one row whose folded quick actions are showing; null = all folded. */
+  protected readonly expandedKey = signal<string | null>(null);
+
+  /**
+   * Whether the row folds. Delivery rows never do — Delivered / Couldn't deliver act on
+   * the household, so they stay in view. Canvass and GOTV outcomes are about a person,
+   * so those rows stay compact until tapped.
+   */
+  protected expandable(h: CompanionHousehold): boolean {
+    return this.store.mode() !== 'delivery' && this.showQuickActions(h);
+  }
+
+  protected panelOpen(entry: Extract<WalkEntry, { kind: 'door' }>): boolean {
+    if (!this.showQuickActions(entry.household)) return false;
+    if (this.store.mode() === 'delivery') return true;
+    return this.expandedKey() === entry.key;
+  }
+
+  /** A foldable row toggles its actions; any other row opens the door screen. */
+  protected rowTap(entry: Extract<WalkEntry, { kind: 'door' }>): void {
+    if (!this.expandable(entry.household)) {
+      this.open(entry);
+      return;
+    }
+    this.expandedKey.set(this.expandedKey() === entry.key ? null : entry.key);
+  }
+
   protected quickAct(h: CompanionHousehold, action: QuickActionId): void {
+    this.expandedKey.set(null);
     performQuickAction(this.store, this.alerts, h, action);
   }
 
