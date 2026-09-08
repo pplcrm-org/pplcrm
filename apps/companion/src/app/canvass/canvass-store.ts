@@ -375,6 +375,8 @@ export class CanvassStore {
    * A payload from before turfs had modes carries none and reads as a plain canvass.
    */
   public readonly mode = computed<TurfMode>(() => this.payload()?.mode ?? 'canvass');
+  /** walk = the street-grouped list; drive = the flat ordered stop list with navigation. */
+  public readonly travel = computed<'walk' | 'drive'>(() => this.payload()?.travel ?? 'walk');
   /** Turf-wide stats — these include every canvasser's work, not just this device's. */
   public readonly stats = computed(() => meStats(this.households()));
   /** Doors this volunteer logged on this device this shift. */

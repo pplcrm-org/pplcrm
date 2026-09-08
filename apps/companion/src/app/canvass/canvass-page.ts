@@ -13,6 +13,7 @@ import { CanvassStore } from './canvass-store';
 import { CanvassSurvey } from './canvass-survey';
 import { CanvassTurfPicker } from './canvass-turf-picker';
 import { DeliveryHousehold } from './delivery-household';
+import { DriveList } from './drive-list';
 import { GotvHousehold } from './gotv-household';
 
 import type { PcIconNameType } from '@icons/icons.index';
@@ -40,6 +41,7 @@ type TabId = 'list' | 'map' | 'me';
     CanvassSurvey,
     CanvassTurfPicker,
     DeliveryHousehold,
+    DriveList,
     GotvHousehold,
     Icon,
   ],
@@ -113,7 +115,13 @@ type TabId = 'list' | 'map' | 'me';
               <pc-canvass-landing></pc-canvass-landing>
             }
             @case ('list') {
-              <pc-canvass-list></pc-canvass-list>
+              <!-- The list view follows the turf's travel: a drive outing gets the flat
+                   ordered stop list with navigation, a walk the street-grouped list. -->
+              @if (store.travel() === 'drive') {
+                <pc-drive-list></pc-drive-list>
+              } @else {
+                <pc-canvass-list></pc-canvass-list>
+              }
             }
             @case ('map') {
               <pc-canvass-map></pc-canvass-map>
