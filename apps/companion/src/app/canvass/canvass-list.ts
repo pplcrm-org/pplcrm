@@ -240,9 +240,15 @@ type QuickActionId = 'supporter' | 'undecided' | 'non_supporter' | 'reminded' | 
                    doors end in one tap, and the detail screen is for the uncommon work.
                    Gone once the door is attempted — the job the buttons do is done. -->
               @if (showQuickActions(entry.household)) {
-                <!-- flex-wrap: four labels on a phone-width row; a long one drops to a
-                     second line of buttons rather than truncating mid-word. -->
-                <div class="flex flex-wrap items-center gap-2 border-t border-base-200 p-2">
+                <!-- GOTV: three buttons + Navigate in one row. Persuasion: four labels,
+                     which crush at phone width in one row, so they sit as a 2×2 grid. -->
+                <div
+                  class="gap-2 border-t border-base-200 p-2"
+                  [class.flex]="store.mode() === 'gotv'"
+                  [class.items-center]="store.mode() === 'gotv'"
+                  [class.grid]="store.mode() !== 'gotv'"
+                  [class.grid-cols-2]="store.mode() !== 'gotv'"
+                >
                   @for (action of quickActions(); track action.id) {
                     <button
                       type="button"
