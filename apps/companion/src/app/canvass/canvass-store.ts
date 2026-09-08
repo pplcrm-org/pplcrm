@@ -828,6 +828,43 @@ export class CanvassStore {
   }
 
   /**
+   * Delivery outing: the volunteer left what this door's requests asked for (or took it
+   * back). Rides the same yard_sign op — on a delivery turf the server flips every request
+   * this outing carries at the door and writes the progress record. Keyed off the payload's
+   * per-door delivery state, which only delivery turfs carry; returns false when there is
+   * nothing to change, so a double tap stays silent.
+   */
+  public deliverDoor(householdId: string, delivered: boolean): boolean {
+    const state = this.householdById(householdId)?.delivery_status;
+    if (state == null) return false;
+    if ((state === 'delivered') === delivered) return false;
+    const op: CompanionOpType = {
+      ...this.baseOp(),
+      type: 'yard_sign',
+      payload: { household_id: householdId, delivered },
+    };
+    this.record(op, `${delivered ? 'Delivered' : 'Delivery undone'} · ${this.addressOf(householdId)}`);
+    return true;
+  }
+
+  /**
+   * "Couldn't deliver": the reason is recorded against the door (and the request's skip
+   * reason). The door stays owed to this outing — it reappears in the pool only when the
+   * outing is retired.
+   */
+  public deliveryResult(householdId: string, reason: string): boolean {
+    const trimmed = reason.trim();
+    if (!trimmed || this.householdById(householdId)?.delivery_status == null) return false;
+    const op: CompanionOpType = {
+      ...this.baseOp(),
+      type: 'delivery_result',
+      payload: { household_id: householdId, reason: trimmed },
+    };
+    this.record(op, `Couldn't deliver · ${this.addressOf(householdId)}`);
+    return true;
+  }
+
+  /**
    * Set a door-level outcome; tapping the active outcome again clears it
    * (enqueues the append-only clear_outcome inverse). Returns which happened.
    */

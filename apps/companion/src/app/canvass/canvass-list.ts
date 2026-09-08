@@ -32,7 +32,15 @@ const REFRESH_MS = 60_000;
 type ListFilter = 'all' | 'remaining' | 'visited';
 
 /** The one-tap outcomes a walk-list row offers; which set depends on the turf's mode. */
-type QuickActionId = 'supporter' | 'undecided' | 'non_supporter' | 'reminded' | 'already_voted' | 'not_home';
+type QuickActionId =
+  | 'supporter'
+  | 'undecided'
+  | 'non_supporter'
+  | 'reminded'
+  | 'already_voted'
+  | 'not_home'
+  | 'delivered'
+  | 'cant_deliver';
 
 /**
  * The walk list (spec §3.3): the street you are on, its progress, then its doors in walk
@@ -240,14 +248,15 @@ type QuickActionId = 'supporter' | 'undecided' | 'non_supporter' | 'reminded' | 
                    doors end in one tap, and the detail screen is for the uncommon work.
                    Gone once the door is attempted — the job the buttons do is done. -->
               @if (showQuickActions(entry.household)) {
-                <!-- GOTV: three buttons + Navigate in one row. Persuasion: four labels,
-                     which crush at phone width in one row, so they sit as a 2×2 grid. -->
+                <!-- GOTV and delivery: two or three buttons + Navigate in one row.
+                     Persuasion: four labels, which crush at phone width in one row,
+                     so they sit as a 2×2 grid. -->
                 <div
                   class="gap-2 border-t border-base-200 p-2"
-                  [class.flex]="store.mode() === 'gotv'"
-                  [class.items-center]="store.mode() === 'gotv'"
-                  [class.grid]="store.mode() !== 'gotv'"
-                  [class.grid-cols-2]="store.mode() !== 'gotv'"
+                  [class.flex]="store.mode() !== 'canvass'"
+                  [class.items-center]="store.mode() !== 'canvass'"
+                  [class.grid]="store.mode() === 'canvass'"
+                  [class.grid-cols-2]="store.mode() === 'canvass'"
                 >
                   @for (action of quickActions(); track action.id) {
                     <button
@@ -258,7 +267,7 @@ type QuickActionId = 'supporter' | 'undecided' | 'non_supporter' | 'reminded' | 
                       {{ action.label }}
                     </button>
                   }
-                  @if (store.mode() === 'gotv') {
+                  @if (store.mode() !== 'canvass') {
                     <button
                       type="button"
                       class="btn btn-outline btn-secondary btn-xs min-h-9"
@@ -346,28 +355,50 @@ export class CanvassList {
    * "Undecided" is on the persuasion row because it is the commonest answer after a miss
    * (operator, 2026-09-07) — hiding it behind the door screen taxed every second door.
    */
-  protected readonly quickActions = computed<{ id: QuickActionId; label: string }[]>(() =>
-    this.store.mode() === 'gotv'
-      ? [
-          { id: 'reminded', label: 'Reminded' },
-          { id: 'already_voted', label: 'Already voted' },
-          { id: 'not_home', label: 'Nobody home' },
-        ]
-      : [
-          { id: 'supporter', label: 'Supporter' },
-          { id: 'undecided', label: 'Undecided' },
-          { id: 'non_supporter', label: 'Non-supporter' },
-          { id: 'not_home', label: 'Not home' },
-        ],
-  );
+  protected readonly quickActions = computed<{ id: QuickActionId; label: string }[]>(() => {
+    const mode = this.store.mode();
+    if (mode === 'gotv') {
+      return [
+        { id: 'reminded', label: 'Reminded' },
+        { id: 'already_voted', label: 'Already voted' },
+        { id: 'not_home', label: 'Nobody home' },
+      ];
+    }
+    if (mode === 'delivery') {
+      // "Couldn't deliver" needs a reason, so it opens the door screen where one is
+      // picked — a reasonless record would tell the office nothing about the retry.
+      return [
+        { id: 'delivered', label: 'Delivered' },
+        { id: 'cant_deliver', label: "Couldn't deliver" },
+      ];
+    }
+    return [
+      { id: 'supporter', label: 'Supporter' },
+      { id: 'undecided', label: 'Undecided' },
+      { id: 'non_supporter', label: 'Non-supporter' },
+      { id: 'not_home', label: 'Not home' },
+    ];
+  });
 
-  /** Quick actions live on doors still owed a visit; a DNC door records nothing at all. */
+  /**
+   * Quick actions live on doors still owed a visit; a DNC door records nothing at all.
+   * A delivery row keys off its delivery state instead — DNC does not bar it, because
+   * the household asked for what is being dropped off.
+   */
   protected showQuickActions(h: CompanionHousehold): boolean {
+    if (this.store.mode() === 'delivery') return h.delivery_status === 'pending';
     return !h.dnc && !isAttempted(h);
   }
 
   protected quickAct(h: CompanionHousehold, action: QuickActionId): void {
     switch (action) {
+      case 'delivered':
+        if (this.store.deliverDoor(h.id, true)) this.alerts.showSuccess('Marked delivered');
+        return;
+      case 'cant_deliver':
+        // The door screen collects the reason.
+        this.store.view.set({ kind: 'household', household_id: h.id });
+        return;
       case 'not_home':
         this.store.doorOutcome(h.id, 'no_answer');
         this.alerts.showSuccess('Marked "Nobody home"');
@@ -468,11 +499,22 @@ export class CanvassList {
     return `${entry.units.length} units · ${entry.attempted} attempted`;
   }
 
+  /** Delivery rows wear their delivery state; every other mode wears the knock status. */
   protected chipClass(h: CompanionHousehold): string {
+    if (this.store.mode() === 'delivery') {
+      if (h.delivery_status === 'delivered') return 'badge badge-success';
+      if (h.delivery_status === 'undeliverable') return 'badge badge-warning';
+      return 'badge badge-ghost';
+    }
     return statusBadgeClass(doorStatus(h));
   }
 
   protected chipLabel(h: CompanionHousehold): string {
+    if (this.store.mode() === 'delivery') {
+      if (h.delivery_status === 'delivered') return 'Delivered';
+      if (h.delivery_status === 'undeliverable') return "Couldn't deliver";
+      return 'Waiting';
+    }
     return doorStatusLabel(doorStatus(h));
   }
 

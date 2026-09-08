@@ -87,6 +87,9 @@ export function doorStatusLabel(status: DoorStatus): string {
  * the door attempted — so the phone's numbers and the campaign's agree.
  */
 export function isAttempted(h: CompanionHousehold): boolean {
+  // On a delivery turf the tap IS the visit: a delivered or couldn't-deliver door was
+  // tried (the server wrote its knock row), whatever the survey-side fields say.
+  if (h.delivery_status === 'delivered' || h.delivery_status === 'undeliverable') return true;
   return doorStatus(h) !== 'not_visited';
 }
 

@@ -328,6 +328,40 @@ describe('CanvassStore', () => {
       expect(postedOps(fetchMock, 0)[0]?.payload['delivered']).toBe(false);
     });
 
+    it('delivery taps: deliverDoor overlays the state and rides the yard_sign op; deliveryResult needs a reason', async () => {
+      store.payload.set({
+        ...turfPayload(),
+        mode: 'delivery',
+        households: [
+          door({ id: '10', walk_order: 1, address: '218 Alder St', delivery_status: 'pending' }),
+          // A door with no delivery state (not this outing's job) records nothing.
+          door({ id: '11', walk_order: 2, address: '220 Scott Blvd' }),
+        ],
+      });
+
+      expect(store.deliverDoor('11', true)).toBe(false);
+      expect(store.deliverDoor('10', true)).toBe(true);
+      expect(store.householdById('10')?.delivery_status).toBe('delivered');
+      // A retry on an already-delivered door is silent.
+      expect(store.deliverDoor('10', true)).toBe(false);
+      await flushMicrotasks();
+      expect(postedOps(fetchMock, 0).map((o) => o.type)).toEqual(['yard_sign']);
+
+      // Undo puts the door back to owed.
+      expect(store.deliverDoor('10', false)).toBe(true);
+      expect(store.householdById('10')?.delivery_status).toBe('pending');
+      await flushMicrotasks();
+      expect(postedOps(fetchMock, 1)[0]?.payload['delivered']).toBe(false);
+
+      expect(store.deliveryResult('10', '   ')).toBe(false);
+      expect(store.deliveryResult('10', 'Gate locked')).toBe(true);
+      expect(store.householdById('10')?.delivery_status).toBe('undeliverable');
+      await flushMicrotasks();
+      const [result] = postedOps(fetchMock, 2);
+      expect(result?.type).toBe('delivery_result');
+      expect(result?.payload['reason']).toBe('Gate locked');
+    });
+
     it('labels queue entries with the person and address', () => {
       store.online.set(false);
       store.personResult('10', '1', 'not_home');

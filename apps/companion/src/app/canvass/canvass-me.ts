@@ -158,6 +158,19 @@ export class CanvassMe {
   protected readonly statCards = computed<{ label: string; value: string }[]>(() => {
     const s = this.stats();
     const attempted = `${s.doors_attempted} of ${s.doors_total}`;
+    if (this.store.mode() === 'delivery') {
+      // Counted straight off each door's delivery state (local taps overlaid) — the same
+      // numbers the office sees once the queue drains.
+      const doors = this.store.households();
+      const delivered = doors.filter((h) => h.delivery_status === 'delivered').length;
+      const failed = doors.filter((h) => h.delivery_status === 'undeliverable').length;
+      return [
+        { label: 'Doors on this outing', value: String(doors.length) },
+        { label: 'Delivered', value: String(delivered) },
+        { label: "Couldn't deliver", value: String(failed) },
+        { label: 'Still waiting', value: String(Math.max(0, doors.length - delivered - failed)) },
+      ];
+    }
     if (this.store.mode() === 'gotv') {
       return [
         { label: 'Doors attempted', value: attempted },
