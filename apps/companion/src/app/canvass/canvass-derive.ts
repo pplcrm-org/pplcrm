@@ -479,7 +479,16 @@ export function householdStance(h: CompanionHousehold): DoorStance {
 
 /** Somebody at this door has already cast a ballot — the green check on the row. */
 export function hasVoted(h: CompanionHousehold): boolean {
-  return h.people.some((p) => p.voting_status != null && VOTED_STATUSES.includes(p.voting_status));
+  return h.people.some(personHasVoted);
+}
+
+/**
+ * This person has already cast a ballot. Voting is done by people, not by addresses, so
+ * anywhere a name is on screen the check belongs on that name; `hasVoted` is only for the
+ * collapsed row that has no names to hang it on.
+ */
+export function personHasVoted(p: CompanionPerson): boolean {
+  return p.voting_status != null && VOTED_STATUSES.includes(p.voting_status);
 }
 
 /**

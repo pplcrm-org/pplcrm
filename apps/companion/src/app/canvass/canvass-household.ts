@@ -4,7 +4,7 @@ import type { CompanionDoorOutcome, CompanionHousehold, CompanionPerson, Compani
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Icon } from '@icons/icon';
 
-import { doorStatus, doorStatusLabel, hasVoted, householdStance, personStance } from './canvass-derive';
+import { doorStatus, doorStatusLabel, householdStance, personHasVoted, personStance } from './canvass-derive';
 import { CanvassStore } from './canvass-store';
 import {
   initialsOf,
@@ -91,15 +91,6 @@ const CLOCK_TICK_MS = 30_000;
           }
         }
 
-        <div class="flex flex-wrap gap-2">
-          @if (voted(h)) {
-            <span class="badge badge-success badge-outline gap-1">
-              <pc-icon name="check-circle" [size]="4"></pc-icon>
-              Already voted
-            </span>
-          }
-        </div>
-
         @if (h.dnc) {
           <div
             class="flex items-center gap-3 rounded-lg border border-error/30 bg-error/10 p-3 text-error"
@@ -161,6 +152,12 @@ const CLOCK_TICK_MS = 30_000;
                   }
                 </span>
                 <span class="mt-1 flex flex-wrap items-center gap-1.5">
+                  @if (voted(p)) {
+                    <span class="badge badge-success badge-outline gap-1">
+                      <pc-icon name="check-circle" [size]="4"></pc-icon>
+                      Already voted
+                    </span>
+                  }
                   @if (p.deceased) {
                     <span class="badge badge-neutral">Deceased</span>
                   } @else if (p.dnc) {
@@ -409,8 +406,9 @@ export class CanvassHousehold implements OnDestroy {
     return chips;
   }
 
-  protected voted(h: CompanionHousehold): boolean {
-    return hasVoted(h);
+  /** Voting is a fact about one person, so the check rides on that person's card. */
+  protected voted(p: CompanionPerson): boolean {
+    return personHasVoted(p);
   }
 
   /** Which building this door belongs to, if it renders as one on the walk list. */
