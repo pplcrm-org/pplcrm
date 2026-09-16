@@ -1,25 +1,31 @@
 name: Deploy infra (monitoring)
 
-# Deploys infra/azure/monitoring.bicep — availability probes, action group (push+email), and
-# metric alerts (see the pplcrm-observability skill). Runs whenever the monitoring template or
-# its params change on main, so alert thresholds are merge-to-deploy.
+# Two independent jobs (see the pplcrm-observability skill):
+#   monitoring — infra/azure/monitoring.bicep: the Azure action group (push+email+SMS) and the
+#                Container App / Postgres metric alerts. Merge-to-deploy for thresholds.
+#   uptime     — infra/uptime-edge: the Cloudflare Worker that probes api.pplcrm.com from outside
+#                Azure every 2 minutes and pages (Twilio SMS + Postmark email) on outage/recovery.
+#                It replaced the Azure availability web tests on 2026-09-16 (cost).
 #
 # monitoring.bicep needs no DATABASE credentials (it references the existing Postgres server rather
 # than provisioning it), which is exactly why it is split from main.bicep — the data-plane template
 # requires pgAdminPassword and stays a manual deploy (see infra/azure/README.md).
 #
-# The service principal behind AZURE_CREDENTIALS needs rights to create Microsoft.Insights /
-# Microsoft.OperationalInsights resources in the resource group (Contributor on the RG covers it).
+# The service principal behind AZURE_CREDENTIALS needs rights to create Microsoft.Insights
+# resources in the resource group (Contributor on the RG covers it).
 #
 # Required secrets:   AZURE_CREDENTIALS            (service-principal JSON — same as deploy.yml)
 #                     OPS_ALERT_SMS_NUMBER         (on-call mobile, 10 digits, no country code, no
 #                                                   punctuation — e.g. 4165550123. A personal number,
 #                                                   so it is a secret rather than a committed param.
-#                                                   This job FAILS if it is unset: without it the
-#                                                   action group has no SMS receiver and nothing
+#                                                   Both jobs FAIL if it is unset: without it nothing
 #                                                   wakes anyone up. See deploy/GO-LIVE-CHECKLIST.md
 #                                                   §1.)
 # Required variables: AZURE_RESOURCE_GROUP, AZURE_API_APP
+#
+# The uptime job additionally needs these secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID,
+# TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, POSTMARK_SERVER_TOKEN, UPTIME_ADMIN_KEY
+# (see infra/uptime-edge/README.md). It fails before deploying if any is missing.
 
 on:
   push:
@@ -27,8 +33,14 @@ on:
     paths:
       - 'infra/azure/monitoring.bicep'
       - 'infra/azure/canadacentral-monitoring.bicepparam'
+      - 'infra/uptime-edge/**'
       - '.github/workflows/deploy-infra.yml'
   workflow_dispatch:
+    inputs:
+      send_test_alert:
+        description: 'After deploying the uptime Worker, send a test alert (a real SMS + email)'
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy-infra-${{ github.ref }}
@@ -82,3 +94,68 @@ jobs:
               -p infra/azure/canadacentral-monitoring.bicepparam \
               -p containerAppResourceId="$APP_ID" \
               -p opsAlertSmsNumber="$OPS_ALERT_SMS_NUMBER"
+
+  uptime:
+    runs-on: ubuntu-latest
+    env:
+      TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      TWILIO_FROM_NUMBER: ${{ secrets.TWILIO_FROM_NUMBER }}
+      OPS_ALERT_SMS_NUMBER: ${{ secrets.OPS_ALERT_SMS_NUMBER }}
+      POSTMARK_SERVER_TOKEN: ${{ secrets.POSTMARK_SERVER_TOKEN }}
+      UPTIME_ADMIN_KEY: ${{ secrets.UPTIME_ADMIN_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same rule as the action group above: a probe that cannot page anyone must not deploy,
+      # because it would look like coverage. Every channel secret is required.
+      - name: Require the alert-channel secrets
+        run: |
+          missing=""
+          for v in TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_FROM_NUMBER OPS_ALERT_SMS_NUMBER POSTMARK_SERVER_TOKEN UPTIME_ADMIN_KEY; do
+            [ -z "${!v}" ] && missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing. Set each with: gh secret set <NAME> -R pplcrm-org/pplcrm (see infra/uptime-edge/README.md). The uptime Worker was NOT deployed."
+            exit 1
+          fi
+          if ! printf '%s' "$OPS_ALERT_SMS_NUMBER" | grep -Eq '^[0-9]{10}$'; then
+            echo "::error::OPS_ALERT_SMS_NUMBER must be exactly 10 digits (the country code is OPS_ALERT_SMS_COUNTRY_CODE in infra/uptime-edge/wrangler.toml)."
+            exit 1
+          fi
+
+      # `secrets:` pushes the listed env vars as Worker secrets on every deploy, so rotating a token
+      # is "update the GitHub secret, re-run this workflow".
+      - name: Deploy uptime Worker
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: infra/uptime-edge
+          wranglerVersion: '4'
+          command: deploy
+          secrets: |
+            TWILIO_ACCOUNT_SID
+            TWILIO_AUTH_TOKEN
+            TWILIO_FROM_NUMBER
+            OPS_ALERT_SMS_NUMBER
+            POSTMARK_SERVER_TOKEN
+            UPTIME_ADMIN_KEY
+
+      - name: Show probe status
+        run: |
+          url="${{ steps.deploy.outputs.deployment-url }}"
+          echo "uptime Worker: $url"
+          curl -fsS --max-time 20 "$url/status" || echo "::warning::/status not reachable yet (the first cron run happens within 2 minutes)"
+
+      - name: Send a test alert (SMS + email)
+        if: github.event_name == 'workflow_dispatch' && inputs.send_test_alert
+        run: |
+          url="${{ steps.deploy.outputs.deployment-url }}"
+          out=$(curl -fsS --max-time 30 -X POST -H "Authorization: Bearer $UPTIME_ADMIN_KEY" "$url/test-alert")
+          echo "$out"
+          if printf '%s' "$out" | grep -q '"failed'; then
+            echo "::error::At least one alert channel failed — see the response above."
+            exit 1
+          fi

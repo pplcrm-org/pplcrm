@@ -1,0 +1,43 @@
+# uptime-edge — the external "is it up" probe for the pplCRM backend.
+#
+# Replaces the Azure Monitor availability web tests (removed 2026-09-16: they were ~CAD 27/mo, half
+# the Azure bill). A Cloudflare cron trigger runs the check every 2 minutes; a single SQLite-backed
+# Durable Object keeps the per-target failure count so an outage pages ONCE (SMS via Twilio + email
+# via Postmark) and recovery pages once. Runs entirely outside Azure, so it still fires when the
+# whole Azure region is down.
+#
+# Deploy: CI (.github/workflows/deploy-infra.yml, job `uptime`) on any change under infra/uptime-edge/.
+# Secrets are pushed by that job from GitHub Actions secrets — see README.md for the list.
+name = "pplcrm-uptime"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+# Every 2 minutes. A target must fail FAIL_THRESHOLD consecutive runs (each run retries once after
+# RETRY_DELAY_MS) before an alert is sent, so worst-case detection is ~4 minutes. Free-plan quota
+# is 100k requests/day; this uses 720 cron runs + ~1,500 probe fetches.
+[triggers]
+crons = ["*/2 * * * *"]
+
+[durable_objects]
+bindings = [{ name = "MONITOR", class_name = "UptimeMonitor" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UptimeMonitor"]
+
+[vars]
+# JSON list of probe targets. `expect` is the HTTP status that means healthy.
+#   api    — Postgres reachable (503 otherwise). The security page's "every few minutes" claim
+#            rides on this one.
+#   worker — ops watchdog heartbeat fresh (< 20 min; 503 `{status:"stale"}` otherwise). The
+#            heartbeat itself is a 20-minute signal, so detection is ~20 min stale + ~4 min here.
+TARGETS = '[{"key":"api","url":"https://api.pplcrm.com/healthz","expect":200},{"key":"worker","url":"https://api.pplcrm.com/healthz/worker","expect":200}]'
+# Consecutive failing runs before paging. 2 runs × 2-minute cron ≈ 4 minutes.
+FAIL_THRESHOLD = "2"
+# Where alerts go. SMS number + country code come from secrets (personal data — see README).
+OPS_ALERT_EMAIL = "hello@pplcrm.com"
+OPS_ALERT_SMS_COUNTRY_CODE = "1"
+# Postmark sender (must be a verified sender signature / domain on the Postmark server).
+ALERT_FROM_EMAIL = "hello@pplcrm.com"
+ALERT_FROM_NAME = "pplCRM uptime"

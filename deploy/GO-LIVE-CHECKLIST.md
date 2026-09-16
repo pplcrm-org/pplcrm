@@ -302,28 +302,28 @@ Re-verified against the live Container App: all expected env vars present (incl.
       retention, Canada Central, geo-redundant backup disabled — matches the site's "retained for 7 days
       in Canada" claim exactly. Blob soft-delete is **off** (site makes no blob-backup claim; deleted
       blobs vanish immediately, which is consistent with — stronger than — the deletion promise).
-- [ ] **Check for orphaned availability webtests in the Azure portal.** The 2026-08-10 probe-cost
-      change removed the `app.pplcrm.com` / `go.pplcrm.com` webtests from the Bicep template, but
-      `deploy-infra.yml` deploys in the default **Incremental** mode, which never deletes
-      resources that disappear from a template — so `pplcrm-avail-app-cad`, `pplcrm-avail-go-cad`
-      and their two alerts are most likely still live, still billing at the old frequency, and no
-      longer described by any file in the repo. List the availability tests under the App
-      Insights resource in `pplcrm-cad-prod`; either delete the two orphans deliberately (the
-      stated ~80% cost drop has not happened until then) or re-add them to the template. Record
-      which world you found.
-- [ ] **Turn the edge availability probes back on**: set `param enableEdgeProbes = true` in
-      `infra/azure/canadacentral-monitoring.bicepparam` and merge — CI deploys it. Pre-launch the
-      probes for `app.pplcrm.com` and `go.pplcrm.com` are off (2026-08-10) because standard web
-      tests bill per execution and those two surfaces are static Cloudflare deployments; at launch,
-      paying ~CAD 7/mo each to catch a broken Pages deploy or an expired custom-domain cert is
-      worth it. The api and worker probes are already on and stay on.
+- [x] **Orphaned availability webtests / App Insights.** Superseded 2026-09-16: the Azure web
+      tests were replaced wholesale by the Cloudflare uptime Worker (`infra/uptime-edge`), and the
+      web tests, their availability alerts, `pplcrm-appinsights-cad` and the `pplcrm-logs-cad`
+      workspace are deleted from the resource group once the Worker's first test alert is
+      confirmed (see the next item). Container App logs go to the auto-created
+      `workspace-pplcrmcadprod3lgn` workspace, which is untouched.
+- [ ] **Verify the uptime Worker pages you.** Add the `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
+      `TWILIO_FROM_NUMBER`, `POSTMARK_SERVER_TOKEN` repository secrets (same values the backend
+      uses), then run the **Deploy infra (monitoring)** workflow by hand with _Send a test alert_
+      ticked. Expect one SMS and one email. Until this passes, the Azure web tests stay in place.
+- [ ] **Probe the static edge surfaces at launch**: add `https://app.pplcrm.com/` and
+      `https://go.pplcrm.com/` (`expect: 200`) to `TARGETS` in `infra/uptime-edge/wrangler.toml`
+      and merge. Pre-launch they are off because they only fail when Cloudflare itself is down or
+      a Pages/Worker deploy breaks; at launch, catching a broken Pages deploy or an expired
+      custom-domain cert is worth the (free) extra fetches.
 - [ ] **Keep the daily health report running on the operator's Mac.** `tools/ops/daily-health/`
       (added 2026-08-31) is a launchd job that once a day collects the HTTP checks, latest deploy
       and failed CI runs, Azure alerts/restarts/Postgres peaks and (optionally) Sentry, has
       headless Claude write a GREEN/YELLOW/RED summary to `~/pplcrm-ops/latest.md` and shows a
       macOS notification. Install/refresh with `tools/ops/daily-health/install.sh`; when the
       report shows "AZURE UNAVAILABLE", run `az login` on that Mac. It is a review layer only —
-      the Azure probes above remain the thing that pages.
+      the Cloudflare uptime Worker above remains the thing that pages.
 - [ ] Consider putting `api.pplcrm.com` behind the Cloudflare proxy (currently DNS-only/grey for the managed
       cert). Optional. **Decide together with the `TRUST_PROXY` measurement below.** Note (2026-08-28):
       this is the actual denial-of-service protection for the API domain. The application-level rate

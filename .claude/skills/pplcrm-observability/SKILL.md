@@ -1,52 +1,69 @@
 ---
 name: pplcrm-observability
-description: "How pplCRM knows the service is down before a user does — Azure Monitor availability probes + alerting (in bicep), /healthz vs /healthz/worker semantics, the ops_watchdog cron + ops_heartbeats dead-man's switch, backend-only Sentry with PII scrubbing, and the CI post-deploy smoke test. USE WHEN adding or changing a health endpoint, changing alert thresholds or probe targets, adding a background job that must be monitored, investigating a fired alert or a stale-heartbeat 503, touching Sentry config/scrubbing, or wiring monitoring for a new surface. EXAMPLES: 'the worker probe is alerting', 'why did I get an ops digest email', 'is Sentry allowed in the browser?'."
+description: "How pplCRM knows the service is down before a user does — the Cloudflare uptime Worker (infra/uptime-edge: cron probe + Twilio/Postmark paging), Azure Monitor metric alerts + action group (in bicep), /healthz vs /healthz/worker semantics, the ops_watchdog cron + ops_heartbeats dead-man's switch, backend-only Sentry with PII scrubbing, and the CI post-deploy smoke test. USE WHEN adding or changing a health endpoint, changing alert thresholds or probe targets, adding a background job that must be monitored, investigating a fired alert or a stale-heartbeat 503, touching Sentry config/scrubbing, or wiring monitoring for a new surface. EXAMPLES: 'the worker probe is alerting', 'why did I get an ops digest email', 'is Sentry allowed in the browser?'."
 ---
 
 # pplCRM observability
 
-Two halves: **"is it up"** (external Azure Monitor probes — they alert even when the whole backend
-is dead) and **"who tells the operator"** (the in-app ops watchdog — it digests failures the probes
-can't see). Don't blur them: anything that must fire when the process is DOWN cannot live in the
-process.
+Two halves: **"is it up"** (an external probe running OUTSIDE Azure — it alerts even when the whole
+backend or region is dead) and **"who tells the operator"** (the in-app ops watchdog — it digests
+failures the probe can't see). Don't blur them: anything that must fire when the process is DOWN
+cannot live in the process.
 
-## The external half — Azure Monitor (infra as code)
+## The external half, part 1 — the Cloudflare uptime Worker (`infra/uptime-edge`)
+
+The thing that pages. A Cloudflare Worker (`pplcrm-uptime`) with a cron trigger `*/2 * * * *`
+probes every entry of `TARGETS` in its `wrangler.toml` — today `api.pplcrm.com/healthz` and
+`api.pplcrm.com/healthz/worker`, expect 200 — with one in-run retry after 10 s. A single
+SQLite-backed Durable Object (`UptimeMonitor`) keeps the consecutive-failure count per target:
+after `FAIL_THRESHOLD = 2` failing runs (~4 min) it sends **one** outage notification (Twilio SMS to
+`OPS_ALERT_SMS_NUMBER` + Postmark email to `OPS_ALERT_EMAIL`) and one recovery notification; nothing
+repeats while it stays down. `GET /status` on the Worker's workers.dev host is public read-only
+JSON (the daily health report reads it); `POST /test-alert` with `Authorization: Bearer
+$UPTIME_ADMIN_KEY` sends a real SMS + email — the equivalent of Azure's "Test action group".
+
+Why a Worker: it replaced App Insights standard web tests on 2026-09-16. Those bill **per
+execution** (~CAD 0.0008; ~CAD 141/mo at 4 tests × 5 locations, ~CAD 27/mo after the 2026-08-10
+trim — half the Azure invoice either way), while a Worker cron is free and independent of Azure.
+**Do not put probes back in bicep.**
+
+Deployed by CI: the `uptime` job in `.github/workflows/deploy-infra.yml` on any change under
+`infra/uptime-edge/` (or workflow*dispatch, which has a \_Send a test alert* input). The job pushes
+the Worker secrets from GitHub Actions secrets on every deploy and **fails before deploying if any
+is missing**: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`,
+`OPS_ALERT_SMS_NUMBER` (10 digits; country code is the `OPS_ALERT_SMS_COUNTRY_CODE` var),
+`POSTMARK_SERVER_TOKEN`, `UPTIME_ADMIN_KEY`. Adding a probe target (e.g. `app.pplcrm.com` at
+launch) = edit `TARGETS` and merge. Keep `/healthz` on the 2-minute cron: the security page promises
+"probes … every few minutes" (`pplcrm-website-claims`).
+
+Known limits: one vantage point per run (the retry + two-run threshold replace Azure's "2 of 3
+regions" rule), and nothing watches the watcher except the daily health report's staleness check
+on `/status`.
+
+## The external half, part 2 — Azure Monitor metric alerts (infra as code)
 
 All in `infra/azure/monitoring.bicep` + `canadacentral-monitoring.bicepparam`, **deployed by CI**:
-`.github/workflows/deploy-infra.yml` runs `az deployment group create` on any merge touching those
-files (or via workflow_dispatch). No DB password — monitoring.bicep references the existing Postgres
-server via `existing` instead of provisioning it, which is why it's split from the manual,
-password-bearing `main.bicep`. It does need one repository secret, **`OPS_ALERT_SMS_NUMBER`** (the
-on-call mobile number; personal data, so deliberately not committed to the `.bicepparam`). The
-workflow passes it as `-p opsAlertSmsNumber=` and **fails the job if it is unset or not exactly 10
-digits** — deploying without it would quietly create an action group with no SMS receiver.
-Provisioned:
+the `monitoring` job of the same workflow runs `az deployment group create` on any merge touching
+those files. No DB password — monitoring.bicep references the existing Postgres server via
+`existing` instead of provisioning it, which is why it's split from the manual, password-bearing
+`main.bicep`. It needs the **`OPS_ALERT_SMS_NUMBER`** repository secret (personal data, so not
+committed to the `.bicepparam`); the workflow passes it as `-p opsAlertSmsNumber=` and **fails the
+job if it is unset or not exactly 10 digits** — deploying without it would quietly create an action
+group with no SMS receiver. Provisioned:
 
-- **Availability tests** (App Insights standard webtests from 3 regions, expect 200). These bill
-  **per execution** (~CAD 0.0008 — they were the entire "Management and Governance" invoice line at
-  ~CAD 141/mo before the 2026-08-10 trim; ~CAD 28/mo after), so frequency/locations/test-count are
-  cost knobs, not free settings. Current shape: `api.pplcrm.com/healthz` every 5 min (the security
-  page's "every few minutes" promise rides on this one — don't slow it without updating
-  `security-content.ts`); `api.pplcrm.com/healthz/worker` every 15 min with a PT30M alert window
-  (only with `enableWorkerProbe = true`; the heartbeat stale threshold is 20 min, so faster probing
-  buys nothing); `app.pplcrm.com` + `go.pplcrm.com` every 15 min but **off pre-launch** behind
-  `enableEdgeProbes = false` (static Cloudflare surfaces; GO-LIVE-CHECKLIST §10 flips it);
-  optional `formsProbeUrl` tenant host, every 15 min. A slow (900s) test's alert window must stay
-  ≥ PT30M or the "2+ locations failing" criterion can never see two results in the window.
 - **Action group `pplcrm-ops-ag`**: Azure mobile-app push + email to `opsAlertEmail`
   (set in `canadacentral-monitoring.bicepparam`), plus SMS to `opsAlertSmsNumber` when supplied.
   SMS is the channel that actually wakes someone: app push is unreliable for this subscription's
   guest (`#EXT#`) identity. An empty `opsAlertSmsNumber` creates no SMS receiver at all — the
   `smsAlertReceiverConfiguredOut` deployment output reports which happened.
   Test via portal → action group → "Test action group".
-- **Metric alerts**: per-test availability (2+ locations failing / 5 min), Container App
-  `RestartCount`/`Replicas` (the workflow looks up `containerAppResourceId`; skipped until the
+- **Metric alerts**: Container App `RestartCount`/`Replicas` (the workflow looks up `containerAppResourceId`; skipped until the
   hand-created app exists), Postgres `cpu_percent` > 90, `storage_percent` > 80,
   `active_connections` > `pgConnectionAlertThreshold` (40; B1ms max ≈ 50).
 
-Changing a threshold, probe target, or the `enableWorkerProbe` flag = edit
-`monitoring.bicep`/`canadacentral-monitoring.bicepparam` and **merge to main** — CI deploys it;
-there is no portal-only config to drift. The security page claims "probes every few minutes that
+Changing a threshold = edit `monitoring.bicep`/`canadacentral-monitoring.bicepparam` and **merge
+to main** — CI deploys it; there is no portal-only config to drift. (Incremental mode never deletes
+a resource you remove from the template — delete it with `az` deliberately.) The security page claims "probes every few minutes that
 page us" — if you weaken this materially, update `security-content.ts` (see `pplcrm-website-claims`).
 
 ## Health endpoints (`apps/backend/src/app/routes.ts`)
@@ -134,7 +151,9 @@ no tools, `PROMPT.md` fixes the format and the GREEN/YELLOW/RED rules), saves th
 loads it (08:17 daily; launchd runs it late if the Mac was asleep). Rules that keep it honest:
 
 - It is a **review**, never detection. It only runs while the Mac is awake and it does not page
-  anyone. Anything that must fire when the service is down stays in Azure Monitor.
+  anyone. Anything that must fire when the service is down stays in the uptime Worker / Azure
+  metric alerts. It does read the Worker's `/status` (`UPTIME_STATUS_URL` in the env file) and
+  flags a `lastRunAt` older than 10 minutes as "nothing is paging".
 - Every data source fails independently and is reported as a **data gap** (`AZURE UNAVAILABLE`
   after the `az` session expires — fix is `az login`; `NOT CONFIGURED` for Sentry until the
   token/org/project are in `~/.config/pplcrm-ops/env`). The prompt forbids treating a missing
@@ -144,9 +163,9 @@ loads it (08:17 daily; launchd runs it late if the Mac was asleep). Rules that k
 
 ## Gotchas
 
-- `enableWorkerProbe` starts `false`: flipping it on before the backend serving `/healthz/worker`
-  is deployed and migrated 404-alerts forever. Order: backend deploy + migration → then flip the
-  flag in `canadacentral-monitoring.bicepparam` and merge (CI deploys it).
+- Adding a probe target to the uptime Worker before the endpoint exists in prod pages an outage
+  within ~4 minutes and keeps the target "down" until it is deployed. Order: backend deploy (+
+  migration) → then add the `TARGETS` entry and merge.
 - The `ops_heartbeats` migration seeds the row at migration time, so a worker that never runs is
   stale-from-birth → alerts. That direction is intentional.
 - `/healthz/worker` treats a missing table (migration not yet applied) as stale (503) — also

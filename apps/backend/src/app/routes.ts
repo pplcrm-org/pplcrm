@@ -130,7 +130,7 @@ export const routes: FastifyPluginCallback = (fastify, _opts, done) => {
     }
   });
 
-  // Job-worker dead-man's switch, probed by the external availability test (NOT wired into the
+  // Job-worker dead-man's switch, probed by the external uptime Worker (infra/uptime-edge; NOT wired into the
   // container's readiness probe — a jammed queue must not pull the API from ingress). The ops
   // watchdog cron updates ops_heartbeats every 5 minutes; a beat older than 20 minutes (3-4
   // missed cycles plus slack) means the in-process worker is wedged even though HTTP is fine.

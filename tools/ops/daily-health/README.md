@@ -48,6 +48,7 @@ SENTRY_AUTH_TOKEN=...                          # with the next two: adds the Sen
 SENTRY_ORG=...
 SENTRY_PROJECT=...
 FORMS_PROBE_URL=https://<org>.pplforms.com/    # adds one tenant forms host to the HTTP checks
+UPTIME_STATUS_URL=https://pplcrm-uptime.<account>.workers.dev/status   # adds the uptime-Worker section (is the thing that pages alive?)
 OPS_REPORT_MODEL=claude-sonnet-5               # a cheaper model for the write-up; default = the CLI default
 PPLCRM_OPS_HOME=/some/other/dir                # move the output directory
 ```

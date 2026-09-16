@@ -301,14 +301,16 @@ live separately):
 - [ ] Confirm the in-process worker/cron is running (background jobs draining; no stuck `background_jobs`).
 - [x] Set up alerting on `/healthz` failures, Container App restarts, and DB connection saturation
       (keep `DB_POOL_MAX` under Postgres `max_connections`). **Done in bicep, deployed by CI** —
-      `infra/azure/monitoring.bicep` provisions App Insights availability tests (api/app/go/forms +
-      optional `/healthz/worker`), an action group (Azure app push + email to `opsAlertEmail`), and
-      metric alerts (Container App restarts/replicas, Postgres cpu/storage/connections). The
-      `deploy-infra.yml` workflow deploys it on any change under `infra/azure/` monitoring files
-      (or via workflow_dispatch) — no DB password needed, but it does require the
-      `OPS_ALERT_SMS_NUMBER` repository secret (on-call mobile for the SMS receiver) and fails the
-      job if it is missing; see `infra/azure/README.md` and `deploy/GO-LIVE-CHECKLIST.md` §1. Test
-      with the action group's "Test action group" button.
+      `infra/azure/monitoring.bicep` provisions an action group (Azure app push + email + SMS to
+      `opsAlertEmail` / `OPS_ALERT_SMS_NUMBER`) and metric alerts (Container App restarts/replicas,
+      Postgres cpu/storage/connections). The external `/healthz` + `/healthz/worker` probes are the
+      Cloudflare Worker in `infra/uptime-edge` (every 2 min, pages via Twilio + Postmark; replaced
+      the per-execution-billed App Insights web tests 2026-09-16). The `deploy-infra.yml` workflow
+      deploys both on any change under `infra/azure/` monitoring files or `infra/uptime-edge/` (or
+      via workflow*dispatch) — no DB password needed, but it requires the `OPS_ALERT_SMS_NUMBER`
+      secret plus the Twilio/Postmark secrets listed in `infra/uptime-edge/README.md`, and fails
+      the job if any is missing. Test with the action group's "Test action group" button and the
+      workflow's \_Send a test alert* input.
 - [ ] Verify DB backups / point-in-time restore are enabled on the Flexible Server.
 - [ ] Establish the migration workflow going forward: **new timestamped migration files only**, never edit applied ones.
 - [ ] Plan secret rotation (`SHARED_SECRET`, `OAUTH_TOKEN_ENC_KEY` — rotating the latter forces mailbox re-consent).

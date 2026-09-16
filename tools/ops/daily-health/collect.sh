@@ -44,6 +44,22 @@ probe "$APP_URL"
 probe "$GO_URL"
 if [ -n "${FORMS_PROBE_URL:-}" ]; then probe "$FORMS_PROBE_URL"; fi
 
+# ------------------------------------------------------------------ uptime Worker (the thing that pages)
+section "Uptime probe — Cloudflare Worker infra/uptime-edge (pages via Twilio + Postmark)"
+if [ -n "${UPTIME_STATUS_URL:-}" ]; then
+  st=$(curl -sS -m 20 "$UPTIME_STATUS_URL" 2>&1)
+  printf '%s' "$st" | jq -r --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
+      if (.lastRunAt? // null) == null then "- UPTIME PROBE HAS NEVER RUN (lastRunAt null) — check the cron trigger"
+      else
+        (((($now | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) - (.lastRunAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 60) | floor) as $age
+        | "- last run \(.lastRunAt) (\($age) min ago)" + (if $age > 10 then " — STALE: the cron is not running, nothing is paging" else "" end),
+          (.targets[] | "- \(.key): \(if .lastOk then "OK" else "FAILING" end) — \(.lastDetail // "-")\(if .alerted then " (outage alert sent, down since \(.downSince))" else "" end)")
+      end' 2>/dev/null \
+    || printf -- '- UPTIME STATUS FAILED: %s\n' "$(printf '%s' "$st" | oneline)"
+else
+  echo "- NOT CONFIGURED: put UPTIME_STATUS_URL=https://pplcrm-uptime.<account>.workers.dev/status in ~/.config/pplcrm-ops/env (the deploy-infra workflow prints the hostname)."
+fi
+
 # ------------------------------------------------------------------ GitHub Actions
 section "GitHub Actions — $GH_REPO"
 SINCE=$(date -u -v-24H '+%Y-%m-%dT%H:%M:%SZ')

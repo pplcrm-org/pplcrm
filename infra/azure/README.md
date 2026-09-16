@@ -33,32 +33,27 @@ _WIP — the `pplcrm-api` Container App is appended when the checklist reaches �
 
 ## What monitoring.bicep provisions (CI, PROD-CHECKLIST §9)
 
-- **Log Analytics workspace** + workspace-based **Application Insights**
-- **Standard availability tests** (5-min, 5 regions, expect 200): `api.pplcrm.com/healthz` (503 on
-  DB-down = failure by design), `app.pplcrm.com`, `go.pplcrm.com`, an optional tenant
-  `*.pplforms.com` host (`formsProbeUrl`), and — once the backend ships `GET /healthz/worker` —
-  the job-worker dead-man heartbeat (`enableWorkerProbe`)
 - **Action group `pplcrm-ops-ag`**: Azure mobile-app push + email to `opsAlertEmail`, plus an SMS
   receiver when `opsAlertSmsNumber` is supplied (the `smsAlertReceiverConfiguredOut` output says
   whether one was created)
-- **Metric alerts**: availability failures, Container App restarts / zero replicas (the workflow
-  looks up `containerAppResourceId`; skipped until the app exists), Postgres
-  cpu/storage/connection saturation
+- **Metric alerts**: Container App restarts / zero replicas (the workflow looks up
+  `containerAppResourceId`; skipped until the app exists), Postgres cpu/storage/connection
+  saturation
 
-Config changes (thresholds, probe targets, `enableWorkerProbe`) are commits to
-`canadacentral-monitoring.bicepparam` / `monitoring.bicep` — merging to main deploys them. The
-workflow can also be run on demand via **workflow_dispatch**. Prerequisite: the
-`AZURE_CREDENTIALS` service principal must be able to create `Microsoft.Insights` /
-`Microsoft.OperationalInsights` resources in the RG (Contributor covers it).
+**Not here: the external availability probes.** Until 2026-09-16 this template also provisioned
+App Insights web tests for `api.pplcrm.com/healthz` and `/healthz/worker`. They bill per
+execution (~CAD 27/mo, half the Azure invoice), so they were replaced by
+[`infra/uptime-edge`](../uptime-edge/README.md) — a Cloudflare Worker cron trigger that probes the
+same endpoints every 2 minutes for free and pages through Twilio SMS + Postmark email. The same
+CI workflow deploys it (job `uptime`).
 
-After the first monitoring deploy:
+Config changes (thresholds) are commits to `canadacentral-monitoring.bicepparam` /
+`monitoring.bicep` — merging to main deploys them. The workflow can also be run on demand via
+**workflow_dispatch**. Prerequisite: the `AZURE_CREDENTIALS` service principal must be able to
+create `Microsoft.Insights` resources in the RG (Contributor covers it).
 
-1. Portal → `pplcrm-appinsights-cad` → Availability: all tests green within ~10 minutes.
-2. Portal → `pplcrm-ops-ag` → **Test action group**: confirm the phone push + email arrive
-   (push requires being signed into the Azure mobile app).
-3. Once the backend exposes `GET /healthz/worker` **and its `ops_heartbeats` migration has run in
-   prod**, set `enableWorkerProbe = true` in `canadacentral-monitoring.bicepparam` and merge —
-   that adds the worker probe + alert. Enabling it earlier 404-alerts.
+After the first monitoring deploy: Portal → `pplcrm-ops-ag` → **Test action group**: confirm the
+phone push + email arrive (push requires being signed into the Azure mobile app).
 
 ## Deploy a region (manual data plane)
 
